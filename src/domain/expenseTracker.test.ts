@@ -259,7 +259,7 @@ describe('editing an expense', () => {
     const { tracker, storage } = setup()
     const expense = addOrFail(tracker, { ...valid, amount: '300' })
 
-    tracker.editExpense(expense.id, { ...valid, amount: '300', expenseDate: '2026-10-31' })
+    tracker.editExpense(expense.id, { ...valid, amount: '300', expenseDate: '2026-10-30' })
 
     const { tracker: reloaded } = setup(storage)
     expect(reloaded.expensesInMonth('2026-11')).toEqual([])
