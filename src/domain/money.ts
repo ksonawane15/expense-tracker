@@ -5,6 +5,16 @@ export function formatAmount(minorUnits: number): string {
   return inrFormat.format(minorUnits / 100)
 }
 
+/**
+ * Minor units as the plain text a user would type, for pre-filling an edit:
+ * 25075 → "250.75", 25000 → "250". Integer maths only; parseAmount reverses it.
+ */
+export function toAmountText(minorUnits: number): string {
+  const wholeRupees = Math.trunc(minorUnits / 100)
+  const paise = minorUnits % 100
+  return paise === 0 ? String(wholeRupees) : `${wholeRupees}.${String(paise).padStart(2, '0')}`
+}
+
 /** ₹1,00,00,000 in minor units: the largest amount a single expense may have. */
 const MAX_AMOUNT = 1_000_000_000
 

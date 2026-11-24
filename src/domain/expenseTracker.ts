@@ -17,15 +17,18 @@ export interface ExpenseInput {
   categoryId: string
 }
 
-/** A user mistake, tied to the input field it concerns. Never thrown. */
+/**
+ * Why an operation was refused: a mistake in one input field, or `'expense'`
+ * when the expense being edited or deleted no longer exists. Never thrown.
+ */
 export interface ValidationError {
-  field: keyof ExpenseInput
+  field: keyof ExpenseInput | 'expense'
   message: string
 }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: ValidationError }
 
-function fail(field: keyof ExpenseInput, message: string): Result<never> {
+function fail(field: ValidationError['field'], message: string): Result<never> {
   return { ok: false, error: { field, message } }
 }
 
@@ -54,6 +57,12 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
     }
   }
 
+  /** The stored position of the expense with `id`, or an error if it no longer exists. */
+  function findExpense(id: string): Result<number> {
+    const index = data.expenses.findIndex((e) => e.id === id)
+    return index === -1 ? fail('expense', 'That expense no longer exists.') : { ok: true, value: index }
+  }
+
   return {
     /** Today's local calendar date, `YYYY-MM-DD`: the default expense date. */
     today,
@@ -74,6 +83,28 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
       data.expenses.push(expense)
       repository.save(data)
       return { ok: true, value: expense }
+    },
+
+    /** Replaces every field of an existing expense, under the same rules as adding one. */
+    editExpense(id: string, input: ExpenseInput): Result<Expense> {
+      const found = findExpense(id)
+      if (!found.ok) return found
+      const checked = validate(input)
+      if (!checked.ok) return checked
+      // Kept in place, so an edit doesn't count as "more recently added".
+      const expense: Expense = { id, ...checked.value }
+      data.expenses[found.value] = expense
+      repository.save(data)
+      return { ok: true, value: expense }
+    },
+
+    /** Removes an expense, returning what was removed. */
+    deleteExpense(id: string): Result<Expense> {
+      const found = findExpense(id)
+      if (!found.ok) return found
+      const [removed] = data.expenses.splice(found.value, 1)
+      repository.save(data)
+      return { ok: true, value: removed }
     },
 
     /**
