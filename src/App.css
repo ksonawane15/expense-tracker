@@ -29,7 +29,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-.add-expense {
+.expense-form {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
@@ -39,13 +39,22 @@
   border-radius: 12px;
 }
 
-.add-expense h2,
-.add-expense .error,
-.add-expense button {
+.expense-form h2,
+.expense-form .error,
+.expense-form .form-actions {
   grid-column: 1 / -1;
 }
 
-.add-expense label {
+.form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.form-actions button {
+  flex: 1;
+}
+
+.expense-form label {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -54,8 +63,8 @@
   min-width: 0;
 }
 
-.add-expense input,
-.add-expense select {
+.expense-form input,
+.expense-form select {
   font: inherit;
   font-size: 16px;
   color: var(--text-h);
@@ -66,16 +75,16 @@
   min-width: 0;
 }
 
-.add-expense [aria-invalid='true'] {
+.expense-form [aria-invalid='true'] {
   border-color: var(--danger);
 }
 
-.add-expense .error {
+.expense-form .error {
   color: var(--danger);
   font-size: 14px;
 }
 
-.add-expense button {
+.expense-form button {
   font: inherit;
   font-weight: 600;
   color: var(--accent-text);
@@ -84,6 +93,31 @@
   border-radius: 8px;
   padding: 10px 16px;
   cursor: pointer;
+}
+
+.expense-form button.secondary,
+.expense-actions button {
+  color: var(--text-h);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.expense-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.expense-actions button {
+  font: inherit;
+  font-size: 13px;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.expense-actions button.danger:hover {
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .empty {
@@ -98,11 +132,15 @@
 
 .expense-list li {
   display: grid;
-  grid-template-columns: 4.5em 1fr auto;
+  grid-template-columns: 4.5em 1fr auto auto;
   gap: 12px;
   align-items: baseline;
   padding: 10px 0;
   border-bottom: 1px solid var(--border);
+}
+
+.expense-list li.editing {
+  display: block;
 }
 
 .expense-date {
@@ -128,7 +166,16 @@
 }
 
 @media (max-width: 480px) {
-  .add-expense {
+  .expense-form {
     grid-template-columns: 1fr;
+  }
+
+  /* Actions drop to their own line under the description on narrow screens. */
+  .expense-list li {
+    grid-template-columns: 4.5em 1fr auto;
+  }
+
+  .expense-actions {
+    grid-column: 2 / -1;
   }
 }

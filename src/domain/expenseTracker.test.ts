@@ -202,3 +202,104 @@ describe('recording an expense', () => {
     ])
   })
 })
+
+function addOrFail(tracker: ReturnType<typeof setup>['tracker'], input = valid) {
+  const result = tracker.addExpense(input)
+  if (!result.ok) throw new Error(`could not add expense: ${result.error.message}`)
+  return result.value
+}
+
+describe('editing an expense', () => {
+  it('changes every field and updates the month list and monthly total', () => {
+    const { tracker } = setup()
+    const expense = addOrFail(tracker)
+
+    const result = tracker.editExpense(expense.id, {
+      amount: '250.75',
+      description: 'Dinner out',
+      expenseDate: '2026-11-21',
+      categoryId: 'entertainment',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(tracker.expensesInMonth('2026-11')).toEqual([
+      {
+        id: expense.id,
+        amount: 25075,
+        description: 'Dinner out',
+        expenseDate: '2026-11-21',
+        categoryId: 'entertainment',
+      },
+    ])
+    expect(tracker.monthlyTotal('2026-11')).toBe(25075)
+  })
+
+  it.each([
+    ['amount', { amount: '0' }],
+    ['amount', { amount: '1.234' }],
+    ['amount', { amount: '-5' }],
+    ['amount', { amount: 'abc' }],
+    ['amount', { amount: '10000000.01' }],
+    ['description', { description: '  ' }],
+    ['expenseDate', { expenseDate: '2026-11-25' }],
+    ['expenseDate', { expenseDate: '2026-02-30' }],
+    ['categoryId', { categoryId: 'no-such-category' }],
+  ] as const)('rejects an edit with an invalid %s and leaves the expense unchanged', (field, change) => {
+    const { tracker, storage } = setup()
+    const expense = addOrFail(tracker)
+
+    const result = tracker.editExpense(expense.id, { ...valid, ...change })
+
+    expect(result).toMatchObject({ ok: false, error: { field } })
+    expect(tracker.expensesInMonth('2026-11')).toEqual([expense])
+    expect(setup(storage).tracker.expensesInMonth('2026-11')).toEqual([expense])
+  })
+
+  it('moves an expense to another month when its expense date changes, and keeps the edit after a reload', () => {
+    const { tracker, storage } = setup()
+    const expense = addOrFail(tracker, { ...valid, amount: '300' })
+
+    tracker.editExpense(expense.id, { ...valid, amount: '300', expenseDate: '2026-10-31' })
+
+    const { tracker: reloaded } = setup(storage)
+    expect(reloaded.expensesInMonth('2026-11')).toEqual([])
+    expect(reloaded.monthlyTotal('2026-11')).toBe(0)
+    expect(reloaded.expensesInMonth('2026-10')).toMatchObject([{ id: expense.id, amount: 30000 }])
+    expect(reloaded.monthlyTotal('2026-10')).toBe(30000)
+  })
+
+  it('refuses to edit an expense that does not exist, changing nothing', () => {
+    const { tracker } = setup()
+    const expense = addOrFail(tracker)
+
+    const result = tracker.editExpense('no-such-expense', valid)
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'expense' } })
+    expect(tracker.expensesInMonth('2026-11')).toEqual([expense])
+  })
+})
+
+describe('deleting an expense', () => {
+  it('removes it from the month list and monthly total, and keeps it gone after a reload', () => {
+    const { tracker, storage } = setup()
+    const kept = addOrFail(tracker, { ...valid, description: 'Kept', amount: '100' })
+    const removed = addOrFail(tracker, { ...valid, description: 'Removed', amount: '40' })
+
+    const result = tracker.deleteExpense(removed.id)
+
+    expect(result.ok).toBe(true)
+    expect(tracker.expensesInMonth('2026-11')).toEqual([kept])
+    expect(tracker.monthlyTotal('2026-11')).toBe(10000)
+    expect(setup(storage).tracker.expensesInMonth('2026-11')).toEqual([kept])
+  })
+
+  it('refuses to delete an expense that does not exist, changing nothing', () => {
+    const { tracker } = setup()
+    const expense = addOrFail(tracker)
+
+    const result = tracker.deleteExpense('no-such-expense')
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'expense' } })
+    expect(tracker.expensesInMonth('2026-11')).toEqual([expense])
+  })
+})
