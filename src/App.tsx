@@ -1,122 +1,124 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
+import { useState, type FormEvent } from 'react'
 import './App.css'
+import { formatExpenseDate, formatMonth } from './domain/calendarDate.ts'
+import { createExpenseTracker, type ExpenseTracker, type ValidationError } from './domain/expenseTracker.ts'
+import { createLocalStorageRepository } from './domain/localStorageRepository.ts'
+import { formatAmount } from './domain/money.ts'
 
-function App() {
-  const [count, setCount] = useState(0)
+export default function App() {
+  const [tracker] = useState(() => createExpenseTracker({ repository: createLocalStorageRepository() }))
+  // The tracker owns the data; bumping this re-renders after each change.
+  const [, setRevision] = useState(0)
+  const month = tracker.currentMonth()
+  const expenses = tracker.expensesInMonth(month)
+  const categoryNames = new Map(tracker.categories().map((c) => [c.id, c.name]))
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <main className="app">
+      <header>
+        <h1>Expenses</h1>
+        <p className="month">{formatMonth(month)}</p>
+        <p className="monthly-total" aria-label="Monthly total">
+          {formatAmount(tracker.monthlyTotal(month))}
+        </p>
+      </header>
 
-      <div className="ticks"></div>
+      <AddExpenseForm tracker={tracker} onAdded={() => setRevision((r) => r + 1)} />
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
+      <section aria-labelledby="expenses-heading">
+        <h2 id="expenses-heading">This month</h2>
+        {expenses.length === 0 ? (
+          <p className="empty">No expenses this month yet.</p>
+        ) : (
+          <ul className="expense-list">
+            {expenses.map((e) => (
+              <li key={e.id}>
+                <span className="expense-date">{formatExpenseDate(e.expenseDate)}</span>
+                <span className="expense-description">
+                  {e.description}
+                  <span className="expense-category">{categoryNames.get(e.categoryId)}</span>
+                </span>
+                <span className="expense-amount">{formatAmount(e.amount)}</span>
+              </li>
+            ))}
           </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
+        )}
       </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+    </main>
   )
 }
 
-export default App
+function AddExpenseForm({ tracker, onAdded }: { tracker: ExpenseTracker; onAdded: () => void }) {
+  const today = tracker.today()
+  const [amount, setAmount] = useState('')
+  const [description, setDescription] = useState('')
+  const [expenseDate, setExpenseDate] = useState(today)
+  const [categoryId, setCategoryId] = useState(tracker.categories()[0].id)
+  const [error, setError] = useState<ValidationError | null>(null)
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    const result = tracker.addExpense({ amount, description, expenseDate, categoryId })
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setError(null)
+    setAmount('')
+    setDescription('')
+    onAdded()
+  }
+
+  const invalid = (field: ValidationError['field']) => error?.field === field || undefined
+
+  return (
+    <form className="add-expense" onSubmit={submit} noValidate>
+      <h2>Add an expense</h2>
+      <label>
+        Amount (₹)
+        <input
+          inputMode="decimal"
+          placeholder="0.00"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          aria-invalid={invalid('amount')}
+        />
+      </label>
+      <label>
+        Description
+        <input
+          placeholder="What was it for?"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          aria-invalid={invalid('description')}
+        />
+      </label>
+      <label>
+        Expense date
+        <input
+          type="date"
+          max={today}
+          value={expenseDate}
+          onChange={(e) => setExpenseDate(e.target.value)}
+          aria-invalid={invalid('expenseDate')}
+        />
+      </label>
+      <label>
+        Category
+        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-invalid={invalid('categoryId')}>
+          {tracker.categories().map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {error && (
+        <p className="error" role="alert">
+          {error.message}
+        </p>
+      )}
+      <button type="submit">Add expense</button>
+    </form>
+  )
+}
