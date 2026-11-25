@@ -1,6 +1,7 @@
 import { isCalendarDate, monthOf, toCalendarDate } from './calendarDate.ts'
 import { parseAmount } from './money.ts'
 import type { Repository } from './repository.ts'
+import { readTrackerJson } from './schema.ts'
 import type { Category, Expense } from './types.ts'
 
 export interface ExpenseTrackerOptions {
@@ -18,11 +19,12 @@ export interface ExpenseInput {
 }
 
 /**
- * Why an operation was refused: a mistake in one input field, or `'expense'`
- * when the expense being edited or deleted no longer exists. Never thrown.
+ * Why an operation was refused: a mistake in one input field, `'expense'`
+ * when the expense being edited or deleted no longer exists, or `'import'`
+ * when an import file was rejected. Never thrown.
  */
 export interface ValidationError {
-  field: keyof ExpenseInput | 'expense'
+  field: keyof ExpenseInput | 'expense' | 'import'
   message: string
 }
 
@@ -33,7 +35,7 @@ function fail(field: ValidationError['field'], message: string): Result<never> {
 }
 
 export function createExpenseTracker({ repository, clock = () => new Date() }: ExpenseTrackerOptions) {
-  const data = repository.load()
+  let data = repository.load()
 
   const today = () => toCalendarDate(clock())
 
@@ -137,6 +139,20 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
     /** `expense-tracker-export-YYYY-MM-DD.json`, dated with today's local date. */
     exportFileName(): string {
       return `expense-tracker-export-${today()}.json`
+    },
+
+    /**
+     * Replaces all categories and expenses with an export file's content and
+     * saves it straight away. All or nothing: a file with any invalid content
+     * is rejected with the reason, and current data is left untouched.
+     * Returns how many categories and expenses were imported.
+     */
+    importFromJson(json: string): Result<{ categories: number; expenses: number }> {
+      const read = readTrackerJson(json, { today: today() })
+      if (!read.ok) return fail('import', read.message)
+      data = read.data
+      repository.save(data)
+      return { ok: true, value: { categories: data.categories.length, expenses: data.expenses.length } }
     },
   }
 }

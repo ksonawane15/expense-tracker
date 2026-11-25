@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import './App.css'
 import { formatExpenseDate, formatMonth } from './domain/calendarDate.ts'
 import { createExpenseTracker, type ExpenseTracker, type ValidationError } from './domain/expenseTracker.ts'
@@ -12,6 +12,8 @@ export default function App() {
   const [, setRevision] = useState(0)
   const refresh = () => setRevision((r) => r + 1)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [importStatus, setImportStatus] = useState<{ ok: boolean; message: string } | null>(null)
+  const importInput = useRef<HTMLInputElement>(null)
   const month = tracker.currentMonth()
   const expenses = tracker.expensesInMonth(month)
   const categoryNames = new Map(tracker.categories().map((c) => [c.id, c.name]))
@@ -22,6 +24,23 @@ export default function App() {
     // If it was already gone there is nothing to undo; refreshing shows the list as it is.
     tracker.deleteExpense(expense.id)
     if (editingId === expense.id) setEditingId(null)
+    refresh()
+  }
+
+  async function importFile(file: File) {
+    const confirmed = window.confirm(
+      `Import "${file.name}"? This replaces all your current categories and expenses, and can't be undone. ` +
+        'Export first if you want to keep a copy.',
+    )
+    if (!confirmed) return
+    const result = tracker.importFromJson(await file.text())
+    if (!result.ok) {
+      setImportStatus({ ok: false, message: `Nothing was imported. ${result.error.message}` })
+      return
+    }
+    const { categories, expenses } = result.value
+    setImportStatus({ ok: true, message: `Imported ${categories} categories and ${expenses} expenses.` })
+    setEditingId(null)
     refresh()
   }
 
@@ -82,9 +101,31 @@ export default function App() {
       <section className="data-controls" aria-labelledby="data-heading">
         <h2 id="data-heading">Your data</h2>
         <p>Your data is saved only in this browser. Export it to a file to keep a backup.</p>
-        <button type="button" onClick={() => downloadExport(tracker)}>
-          Export
-        </button>
+        <div className="data-actions">
+          <button type="button" onClick={() => downloadExport(tracker)}>
+            Export
+          </button>
+          <button type="button" onClick={() => importInput.current?.click()}>
+            Import
+          </button>
+          <input
+            ref={importInput}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              // Cleared so choosing the same file again still triggers an import.
+              e.target.value = ''
+              if (file) void importFile(file)
+            }}
+          />
+        </div>
+        {importStatus && (
+          <p className={importStatus.ok ? 'import-status' : 'import-status error'} role={importStatus.ok ? 'status' : 'alert'}>
+            {importStatus.message}
+          </p>
+        )}
       </section>
     </main>
   )

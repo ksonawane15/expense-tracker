@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createExpenseTracker } from './expenseTracker.ts'
+import schemaV1Fixture from './fixtures/schema-v1.json?raw'
 import { createLocalStorageRepository } from './localStorageRepository.ts'
 
 function fakeStorage(): Storage {
@@ -337,3 +338,166 @@ describe('exporting', () => {
     expect(tracker.exportFileName()).toBe('expense-tracker-export-2027-01-05.json')
   })
 })
+
+describe('importing', () => {
+  it('gives back exactly the exported data, replacing all current data, and keeps it after a reload', () => {
+    const { tracker: source } = setup()
+    addOrFail(source, { ...valid, amount: '0.10', expenseDate: '2026-10-31' })
+    addOrFail(source, { ...valid, amount: '1250.50', description: 'Electricity', categoryId: 'bills' })
+    const exported = source.exportToJson()
+
+    const { tracker, storage } = setup()
+    addOrFail(tracker, { ...valid, description: 'Replaced by the import' })
+    const result = tracker.importFromJson(exported)
+
+    expect(result.ok).toBe(true)
+    expect(tracker.exportToJson()).toBe(exported)
+    expect(setup(storage).tracker.exportToJson()).toBe(exported)
+  })
+
+  // Each schema version adds a fixture for the version before it, so old export files keep importing.
+  it('imports a version 1 export file', () => {
+    const { tracker, storage } = setup()
+
+    const result = tracker.importFromJson(schemaV1Fixture)
+
+    expect(result).toEqual({ ok: true, value: { categories: 9, expenses: 3 } })
+    for (const t of [tracker, setup(storage).tracker]) {
+      expect(t.categories().at(-1)).toEqual({ id: '3f0c2a7e-5b1d-4c8e-9a6f-1d2e3c4b5a69', name: 'Books' })
+      expect(t.expensesInMonth('2026-10')).toMatchObject([{ amount: 1250, description: 'Chai and samosa' }])
+      expect(t.expensesInMonth('2026-11').map((e) => e.description)).toEqual(['Novel', 'November rent'])
+      expect(t.monthlyTotal('2026-11')).toBe(2_549_900)
+    }
+  })
+
+  it('says how many categories and expenses were imported', () => {
+    const { tracker } = setup()
+
+    const result = tracker.importFromJson(JSON.stringify(importFile()))
+
+    expect(result).toEqual({ ok: true, value: { categories: 3, expenses: 2 } })
+  })
+
+  /** Imports `file`, expecting it to be rejected with `reason` and current data left untouched. */
+  function expectRejected(file: string, reason: RegExp) {
+    const { tracker, storage } = setup()
+    addOrFail(tracker, { ...valid, description: 'Already here' })
+    const before = tracker.exportToJson()
+
+    const result = tracker.importFromJson(file)
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'import' } })
+    expect(result.ok || result.error.message).toMatch(reason)
+    expect(tracker.exportToJson()).toBe(before)
+    expect(setup(storage).tracker.exportToJson()).toBe(before)
+  }
+
+  it.each([
+    ['text that is not JSON', '{ "schemaVersion": 1, '],
+    ['an empty file', ''],
+  ])('rejects %s', (_, file) => {
+    expectRejected(file, /not valid JSON/)
+  })
+
+  it.each([
+    ['newer than the app understands', 2],
+    ['unknown', 0],
+    ['not an integer', 1.5],
+    ['text', '1'],
+  ])('rejects a file whose schemaVersion is %s', (_, schemaVersion) => {
+    expectRejected(JSON.stringify({ ...importFile(), schemaVersion }), /schema version/i)
+  })
+
+  it('rejects a file with no schemaVersion', () => {
+    const { schemaVersion: _, ...file } = importFile()
+    expectRejected(JSON.stringify(file), /schema version/i)
+  })
+
+  it.each([
+    ['a JSON value that is not an object', '[]', /not expense tracker data/],
+    ['no categories', JSON.stringify({ ...importFile(), categories: undefined }), /categories/],
+    ['no expenses', JSON.stringify({ ...importFile(), expenses: undefined }), /expenses/],
+    ['categories that are not a list', JSON.stringify({ ...importFile(), categories: {} }), /categories/],
+  ])('rejects a file with %s', (_, file, reason) => {
+    expectRejected(file, reason)
+  })
+
+  it.each(['id', 'name'])('rejects a category with no %s', (field) => {
+    const file = importFile()
+    delete (file.categories[1] as Record<string, unknown>)[field]
+    expectRejected(JSON.stringify(file), new RegExp(`category 2 .*${field}`, 'i'))
+  })
+
+  it.each(['id', 'amount', 'description', 'expenseDate', 'categoryId'])('rejects an expense with no %s', (field) => {
+    const file = importFile()
+    delete file.expenses[1][field]
+    expectRejected(JSON.stringify(file), new RegExp(`expense 2 .*${field === 'expenseDate' ? 'expense date' : field === 'categoryId' ? 'category' : field}`, 'i'))
+  })
+
+  it.each([
+    ['not an integer of minor units', 12.5],
+    ['zero', 0],
+    ['negative', -100],
+    ['text', '1250'],
+    ['above ₹1,00,00,000', 1_000_000_001],
+  ])('rejects an expense whose amount is %s', (_, amount) => {
+    const file = importFile()
+    file.expenses[1].amount = amount
+    expectRejected(JSON.stringify(file), /expense 2 .*amount/i)
+  })
+
+  it.each([
+    ['malformed', '24/11/2026', /expense 2 .*expense date/i],
+    ['an impossible calendar day', '2026-02-30', /expense 2 .*expense date/i],
+    ['a timestamp', '2026-11-20T10:00:00Z', /expense 2 .*expense date/i],
+    ['not text', 20261120, /expense 2 .*expense date/i],
+    ['in the future', '2026-11-25', /expense 2 .*future/i],
+  ])('rejects an expense whose expense date is %s', (_, expenseDate, reason) => {
+    const file = importFile()
+    file.expenses[1].expenseDate = expenseDate
+    expectRejected(JSON.stringify(file), reason)
+  })
+
+  it('rejects an expense pointing at a category that does not exist', () => {
+    const file = importFile()
+    file.expenses[1].categoryId = 'no-such-category'
+    expectRejected(JSON.stringify(file), /expense 2 .*category that does not exist/i)
+  })
+
+  it('rejects duplicate category names, ignoring case and surrounding whitespace', () => {
+    const file = importFile()
+    file.categories.push({ id: 'food-again', name: '  FOOD ' })
+    expectRejected(JSON.stringify(file), /more than one category named "Food"/i)
+  })
+
+  it('rejects a file with no Other category', () => {
+    const file = importFile()
+    file.categories = file.categories.filter((c) => c.id !== 'other')
+    expectRejected(JSON.stringify(file), /no Other category/i)
+  })
+
+  it.each([
+    ['categories', (f: ReturnType<typeof importFile>) => f.categories.push({ id: 'food', name: 'Groceries' })],
+    ['expenses', (f: ReturnType<typeof importFile>) => f.expenses.push({ ...f.expenses[0] })],
+  ])('rejects %s that share an id', (_, duplicate) => {
+    const file = importFile()
+    duplicate(file)
+    expectRejected(JSON.stringify(file), /share the id/i)
+  })
+})
+
+/** A small, valid import file in the current schema. */
+function importFile() {
+  return {
+    schemaVersion: 1,
+    categories: [
+      { id: 'food', name: 'Food' },
+      { id: 'books', name: 'Books' },
+      { id: 'other', name: 'Other' },
+    ],
+    expenses: [
+      { id: 'e1', amount: 1250, description: 'Chai and samosa', expenseDate: '2026-11-20', categoryId: 'food' },
+      { id: 'e2', amount: 49900, description: 'Novel', expenseDate: '2026-11-24', categoryId: 'books' },
+    ] as Record<string, unknown>[],
+  }
+}

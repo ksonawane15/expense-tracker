@@ -185,6 +185,19 @@
   font-size: 14px;
 }
 
+.data-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.import-status {
+  margin-top: 8px;
+}
+
+.data-controls .import-status.error {
+  color: var(--danger);
+}
+
 .data-controls button {
   font: inherit;
   font-weight: 600;
