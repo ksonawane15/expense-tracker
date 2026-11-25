@@ -4,7 +4,7 @@ import { formatExpenseDate, formatMonth } from './domain/calendarDate.ts'
 import { createExpenseTracker, type ExpenseTracker, type ValidationError } from './domain/expenseTracker.ts'
 import { createLocalStorageRepository } from './domain/localStorageRepository.ts'
 import { formatAmount, toAmountText } from './domain/money.ts'
-import type { Expense } from './domain/types.ts'
+import { OTHER_CATEGORY_ID, type Category, type Expense } from './domain/types.ts'
 
 export default function App() {
   const [tracker] = useState(() => createExpenseTracker({ repository: createLocalStorageRepository() }))
@@ -106,6 +106,8 @@ export default function App() {
         )}
       </section>
 
+      <CategoryManager tracker={tracker} onChanged={refresh} />
+
       <section className="data-controls" aria-labelledby="data-heading">
         <h2 id="data-heading">Your data</h2>
         <p>Your data is saved only in this browser. Export it to a file to keep a backup.</p>
@@ -114,6 +116,125 @@ export default function App() {
         </button>
       </section>
     </main>
+  )
+}
+
+interface CategoryManagerProps {
+  tracker: ExpenseTracker
+  onChanged: () => void
+}
+
+/** Adds, renames and deletes categories; a delete moves its expenses to Other after confirmation. */
+function CategoryManager({ tracker, onChanged }: CategoryManagerProps) {
+  const [newName, setNewName] = useState('')
+  const [addError, setAddError] = useState<ValidationError | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameText, setRenameText] = useState('')
+  const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null)
+
+  function add(event: FormEvent) {
+    event.preventDefault()
+    const result = tracker.addCategory(newName)
+    if (!result.ok) {
+      setAddError(result.error)
+      return
+    }
+    setAddError(null)
+    setNewName('')
+    onChanged()
+  }
+
+  function startRename(category: Category) {
+    setRenamingId(category.id)
+    setRenameText(category.name)
+    setRowError(null)
+  }
+
+  function saveRename(event: FormEvent, id: string) {
+    event.preventDefault()
+    const result = tracker.renameCategory(id, renameText)
+    if (!result.ok) {
+      setRowError({ id, message: result.error.message })
+      return
+    }
+    setRenamingId(null)
+    setRowError(null)
+    onChanged()
+  }
+
+  function remove(category: Category) {
+    const moved = tracker.expensesMovedOnDelete(category.id)
+    const other = tracker.categories().find((c) => c.id === OTHER_CATEGORY_ID)?.name ?? 'Other'
+    const consequence =
+      moved === 0
+        ? 'No expenses will move.'
+        : `${moved} ${moved === 1 ? 'expense' : 'expenses'} will move to ${other}.`
+    if (!window.confirm(`Delete the category "${category.name}"? ${consequence}`)) return
+    const result = tracker.deleteCategory(category.id)
+    setRowError(result.ok ? null : { id: category.id, message: result.error.message })
+    if (renamingId === category.id) setRenamingId(null)
+    onChanged()
+  }
+
+  return (
+    <section aria-labelledby="categories-heading" className="category-manager">
+      <h2 id="categories-heading">Categories</h2>
+      <ul className="category-list">
+        {tracker.categories().map((c) => (
+          <li key={c.id}>
+            {c.id === renamingId ? (
+              <form className="category-rename" onSubmit={(e) => saveRename(e, c.id)} noValidate>
+                <input
+                  aria-label={`New name for ${c.name}`}
+                  value={renameText}
+                  onChange={(e) => setRenameText(e.target.value)}
+                  aria-invalid={rowError?.id === c.id || undefined}
+                  autoFocus
+                />
+                <button type="submit">Save</button>
+                <button type="button" className="secondary" onClick={() => setRenamingId(null)}>
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <>
+                <span className="category-name">{c.name}</span>
+                <span className="expense-actions">
+                  <button type="button" onClick={() => startRename(c)} aria-label={`Rename ${c.name}`}>
+                    Rename
+                  </button>
+                  {c.id !== OTHER_CATEGORY_ID && (
+                    <button type="button" className="danger" onClick={() => remove(c)} aria-label={`Delete ${c.name}`}>
+                      Delete
+                    </button>
+                  )}
+                </span>
+              </>
+            )}
+            {rowError?.id === c.id && (
+              <p className="error" role="alert">
+                {rowError.message}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+      <form className="category-add" onSubmit={add} noValidate>
+        <input
+          aria-label="New category name"
+          placeholder="New category"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          aria-invalid={addError !== null || undefined}
+        />
+        <button type="submit">Add category</button>
+        {addError && (
+          <p className="error" role="alert">
+            {addError.message}
+          </p>
+        )}
+      </form>
+    </section>
   )
 }
 
@@ -142,7 +263,9 @@ function ExpenseForm({ tracker, expenseToEdit, onSaved, onCancel }: ExpenseFormP
   const [amount, setAmount] = useState(expenseToEdit ? toAmountText(expenseToEdit.amount) : '')
   const [description, setDescription] = useState(expenseToEdit?.description ?? '')
   const [expenseDate, setExpenseDate] = useState(expenseToEdit?.expenseDate ?? today)
-  const [categoryId, setCategoryId] = useState(expenseToEdit?.categoryId ?? tracker.categories()[0].id)
+  const [chosenCategoryId, setCategoryId] = useState(expenseToEdit?.categoryId ?? tracker.categories()[0].id)
+  // If the chosen category has since been deleted, its expenses went to Other, so the form follows.
+  const categoryId = tracker.categories().some((c) => c.id === chosenCategoryId) ? chosenCategoryId : OTHER_CATEGORY_ID
   const [error, setError] = useState<ValidationError | null>(null)
 
   function submit(event: FormEvent) {
