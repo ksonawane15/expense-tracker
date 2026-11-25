@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createExpenseTracker } from './expenseTracker.ts'
+import { createExpenseTracker, type ExpenseTracker } from './expenseTracker.ts'
 import schemaV1Fixture from './fixtures/schema-v1.json?raw'
 import { createLocalStorageRepository } from './localStorageRepository.ts'
 
@@ -691,5 +691,123 @@ describe('category totals', () => {
 
     expect(tracker.monthlyTotal('2026-08')).toBe(0)
     expect(tracker.categoryTotals('2026-08')).toEqual([])
+  })
+})
+
+describe('stored data', () => {
+  const STORAGE_KEY = 'expense-tracker'
+
+  /** A fake Storage already holding `text` as the stored data, as left by an earlier visit. */
+  function seeded(text: string) {
+    const storage = fakeStorage()
+    storage.setItem(STORAGE_KEY, text)
+    return storage
+  }
+
+  // Each schema version adds a fixture for the version before it, so data saved by an older app keeps loading.
+  it('loads stored data saved by version 1 and saves it back in the current schema', () => {
+    const storage = seeded(schemaV1Fixture)
+
+    const { tracker } = setup(storage)
+
+    expect(tracker.storedDataProblem()).toBeNull()
+    expect(tracker.categories().at(-1)).toEqual({ id: '3f0c2a7e-5b1d-4c8e-9a6f-1d2e3c4b5a69', name: 'Books' })
+    expect(tracker.expensesInMonth('2026-11').map((e) => e.description)).toEqual(['Novel', 'November rent'])
+    expect(tracker.monthlyTotal('2026-11')).toBe(2_549_900)
+    expect(JSON.parse(storage.getItem(STORAGE_KEY)!)).toEqual(JSON.parse(tracker.exportToJson()))
+  })
+
+  it('drops fields the schema does not define from stored data when saving it back', () => {
+    const file = { ...importFile(), leftover: 'from a buggy build' }
+    const storage = seeded(JSON.stringify(file))
+
+    setup(storage)
+
+    expect(JSON.parse(storage.getItem(STORAGE_KEY)!)).not.toHaveProperty('leftover')
+  })
+
+  it('reports stored data that is not valid JSON, and leaves it in storage', () => {
+    const corrupt = '{ "schemaVersion": 1, "categories": ['
+    const { tracker, storage } = setup(seeded(corrupt))
+
+    expect(tracker.storedDataProblem()).toMatchObject({ message: expect.stringMatching(/not valid JSON/), storedText: corrupt })
+    expect(storage.getItem(STORAGE_KEY)).toBe(corrupt)
+  })
+
+  it('names the download of unreadable stored data with today’s date', () => {
+    const { tracker } = setup(seeded('not json at all'))
+
+    expect(tracker.storedDataProblem()?.fileName).toBe('expense-tracker-unreadable-data-2026-11-24.txt')
+  })
+
+  it('reports stored data that fails validation, with the same reason an import would give', () => {
+    const file = importFile()
+    file.expenses[1].amount = 12.5
+    const { tracker } = setup(seeded(JSON.stringify(file)))
+
+    expect(tracker.storedDataProblem()?.message).toMatch(/expense 2 .*amount/i)
+  })
+
+  it('reports stored data from a newer schema version rather than guessing at it', () => {
+    const { tracker } = setup(seeded(JSON.stringify({ ...importFile(), schemaVersion: 2 })))
+
+    expect(tracker.storedDataProblem()?.message).toMatch(/newer than this app understands/)
+  })
+
+  it.each([
+    ['adding an expense', (t: ExpenseTracker) => t.addExpense(valid)],
+    ['adding a category', (t: ExpenseTracker) => t.addCategory('Books')],
+    ['renaming a category', (t: ExpenseTracker) => t.renameCategory('food', 'Groceries')],
+    ['deleting a category', (t: ExpenseTracker) => t.deleteCategory('food')],
+    ['importing', (t: ExpenseTracker) => t.importFromJson(JSON.stringify(importFile()))],
+  ])('refuses %s while stored data is unreadable, so the stored data is never overwritten', (_, change) => {
+    const corrupt = 'not json at all'
+    const { tracker, storage } = setup(seeded(corrupt))
+
+    const result = change(tracker)
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'storedData' } })
+    expect(storage.getItem(STORAGE_KEY)).toBe(corrupt)
+    expect(setup(storage).tracker.storedDataProblem()?.storedText).toBe(corrupt)
+  })
+
+  it('refuses editing and deleting an expense while stored data is unreadable', () => {
+    const corrupt = 'not json at all'
+    const { tracker, storage } = setup(seeded(corrupt))
+
+    expect(tracker.editExpense('e1', valid)).toMatchObject({ ok: false })
+    expect(tracker.deleteExpense('e1')).toMatchObject({ ok: false })
+    expect(storage.getItem(STORAGE_KEY)).toBe(corrupt)
+  })
+
+  it('starts fresh with the default categories only when asked, and keeps working after a reload', () => {
+    const { tracker, storage } = setup(seeded('not json at all'))
+
+    expect(tracker.startFresh()).toEqual({ ok: true, value: undefined })
+
+    expect(tracker.storedDataProblem()).toBeNull()
+    addOrFail(tracker, { ...valid, description: 'After starting fresh' })
+    const reloaded = setup(storage).tracker
+    expect(reloaded.storedDataProblem()).toBeNull()
+    expect(reloaded.categories().map((c) => c.name)).toEqual([
+      'Food',
+      'Transport',
+      'Rent',
+      'Bills',
+      'Shopping',
+      'Health',
+      'Entertainment',
+      'Other',
+    ])
+    expect(reloaded.expensesInMonth('2026-11').map((e) => e.description)).toEqual(['After starting fresh'])
+  })
+
+  it('refuses to start fresh when stored data loaded fine, so good data is never thrown away', () => {
+    const { tracker, storage } = setup()
+    addOrFail(tracker)
+    const before = storage.getItem(STORAGE_KEY)
+
+    expect(tracker.startFresh()).toMatchObject({ ok: false, error: { field: 'storedData' } })
+    expect(storage.getItem(STORAGE_KEY)).toBe(before)
   })
 })

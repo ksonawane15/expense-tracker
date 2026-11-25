@@ -1,7 +1,12 @@
 import { useRef, useState, type FormEvent } from 'react'
 import './App.css'
 import { formatExpenseDate, formatMonth } from './domain/calendarDate.ts'
-import { createExpenseTracker, type ExpenseTracker, type ValidationError } from './domain/expenseTracker.ts'
+import {
+  createExpenseTracker,
+  type ExpenseTracker,
+  type StoredDataProblem,
+  type ValidationError,
+} from './domain/expenseTracker.ts'
 import { createLocalStorageRepository } from './domain/localStorageRepository.ts'
 import { formatAmount, toAmountText } from './domain/money.ts'
 import { OTHER_CATEGORY_ID, type Category, type Expense } from './domain/types.ts'
@@ -11,6 +16,69 @@ export default function App() {
   // The tracker owns the data; bumping this re-renders after each change.
   const [, setRevision] = useState(0)
   const refresh = () => setRevision((r) => r + 1)
+  const problem = tracker.storedDataProblem()
+  // Nothing that could save is shown until the user has dealt with unreadable stored data.
+  if (problem) return <StoredDataProblemScreen tracker={tracker} problem={problem} onStartedFresh={refresh} />
+  return <ExpenseTrackerScreen tracker={tracker} refresh={refresh} />
+}
+
+interface StoredDataProblemScreenProps {
+  tracker: ExpenseTracker
+  problem: StoredDataProblem
+  onStartedFresh: () => void
+}
+
+/** Reports stored data that couldn't be read, offers a download of it, and starts fresh only once confirmed. */
+function StoredDataProblemScreen({ tracker, problem, onStartedFresh }: StoredDataProblemScreenProps) {
+  const [error, setError] = useState<string | null>(null)
+
+  function startFresh() {
+    const confirmed = window.confirm(
+      'Start fresh with the default categories and no expenses? Your saved data will be replaced and can’t be ' +
+        'recovered here afterwards. Download it first if you want to keep a copy.',
+    )
+    if (!confirmed) return
+    const result = tracker.startFresh()
+    if (!result.ok) {
+      setError(result.error.message)
+      return
+    }
+    onStartedFresh()
+  }
+
+  return (
+    <main className="app">
+      <section className="data-controls" aria-labelledby="stored-data-heading">
+        <h1 id="stored-data-heading">Your saved data couldn’t be read</h1>
+        <p role="alert">{problem.message}</p>
+        <p>
+          Nothing has been changed or deleted. Download the saved data to keep a copy you can fix and import later,
+          then start fresh with the default categories.
+        </p>
+        <div className="data-actions">
+          <button type="button" onClick={() => downloadFile(problem.storedText, problem.fileName, 'text/plain')}>
+            Download saved data
+          </button>
+          <button type="button" className="danger" onClick={startFresh}>
+            Start fresh
+          </button>
+        </div>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+      </section>
+    </main>
+  )
+}
+
+interface ExpenseTrackerScreenProps {
+  tracker: ExpenseTracker
+  refresh: () => void
+}
+
+function ExpenseTrackerScreen({ tracker, refresh }: ExpenseTrackerScreenProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [importStatus, setImportStatus] = useState<{ ok: boolean; message: string } | null>(null)
   const importInput = useRef<HTMLInputElement>(null)
@@ -281,11 +349,15 @@ function CategoryManager({ tracker, onChanged }: CategoryManagerProps) {
 
 /** Saves the tracker's export as a JSON file; the tracker decides its content and name. */
 function downloadExport(tracker: ExpenseTracker) {
-  const blob = new Blob([tracker.exportToJson()], { type: 'application/json' })
+  downloadFile(tracker.exportToJson(), tracker.exportFileName(), 'application/json')
+}
+
+function downloadFile(text: string, fileName: string, type: string) {
+  const blob = new Blob([text], { type })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = tracker.exportFileName()
+  link.download = fileName
   link.click()
   URL.revokeObjectURL(url)
 }

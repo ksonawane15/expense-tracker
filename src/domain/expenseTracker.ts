@@ -2,7 +2,7 @@ import { addMonths, isCalendarDate, monthOf, toCalendarDate } from './calendarDa
 import { parseAmount } from './money.ts'
 import type { Repository } from './repository.ts'
 import { readTrackerJson } from './schema.ts'
-import { OTHER_CATEGORY_ID, type Category, type Expense } from './types.ts'
+import { defaultData, OTHER_CATEGORY_ID, type Category, type Expense } from './types.ts'
 
 export interface ExpenseTrackerOptions {
   repository: Repository
@@ -23,10 +23,12 @@ export interface ExpenseInput {
  * for a category's name), `'expense'` when the expense being edited or deleted
  * no longer exists, `'category'` when the category being renamed or deleted
  * no longer exists or is Other, which can't be deleted, or `'import'` when an
- * import file was rejected. Never thrown.
+ * import file was rejected, or `'storedData'` when a change was refused
+ * because stored data couldn't be read and the user hasn't started fresh.
+ * Never thrown.
  */
 export interface ValidationError {
-  field: keyof ExpenseInput | 'expense' | 'categoryName' | 'category' | 'import'
+  field: keyof ExpenseInput | 'expense' | 'categoryName' | 'category' | 'import' | 'storedData'
   message: string
 }
 
@@ -43,10 +45,26 @@ function fail(field: ValidationError['field'], message: string): Result<never> {
   return { ok: false, error: { field, message } }
 }
 
-export function createExpenseTracker({ repository, clock = () => new Date() }: ExpenseTrackerOptions) {
-  let data = repository.load()
+/** Stored data that couldn't be read on load: why, and the stored text exactly as found. */
+export interface StoredDataProblem {
+  message: string
+  storedText: string
+  /** `expense-tracker-unreadable-data-YYYY-MM-DD.txt`, for downloading `storedText`. */
+  fileName: string
+}
 
+export function createExpenseTracker({ repository, clock = () => new Date() }: ExpenseTrackerOptions) {
   const today = () => toCalendarDate(clock())
+
+  const loaded = repository.load({ today: today() })
+  let problem: StoredDataProblem | null = loaded.ok
+    ? null
+    : {
+        message: loaded.message,
+        storedText: loaded.storedText,
+        fileName: `expense-tracker-unreadable-data-${today()}.txt`,
+      }
+  let data = loaded.ok ? loaded.data : defaultData()
 
   function validate(input: ExpenseInput): Result<Omit<Expense, 'id'>> {
     const amount = parseAmount(input.amount)
@@ -88,6 +106,14 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
     return index === -1 ? fail('category', 'That category no longer exists.') : { ok: true, value: index }
   }
 
+  /**
+   * Every change saves the whole data blob, which would overwrite stored data
+   * that couldn't be read; so changes are refused until the user starts fresh.
+   */
+  function refuseWhileUnreadable(): Result<never> {
+    return fail('storedData', 'Your saved data could not be read. Download it or start fresh before making changes.')
+  }
+
   /** The stored position of the expense with `id`, or an error if it no longer exists. */
   function findExpense(id: string): Result<number> {
     const index = data.expenses.findIndex((e) => e.id === id)
@@ -95,6 +121,28 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
   }
 
   return {
+    /**
+     * Why the stored data couldn't be read on load, with its text so the user
+     * can save a copy, or `null` when it loaded fine. Until the user chooses to
+     * start fresh, the stored data is never overwritten.
+     */
+    storedDataProblem(): StoredDataProblem | null {
+      return problem
+    },
+
+    /**
+     * Replaces stored data that couldn't be read with the default categories
+     * and no expenses, and saves it. Only for after the user has confirmed;
+     * refused when the stored data loaded fine.
+     */
+    startFresh(): Result<void> {
+      if (!problem) return fail('storedData', 'Your saved data loaded fine, so there is nothing to start fresh from.')
+      data = defaultData()
+      repository.save(data)
+      problem = null
+      return { ok: true, value: undefined }
+    },
+
     /** Today's local calendar date, `YYYY-MM-DD`: the default expense date. */
     today,
 
@@ -118,6 +166,7 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
     },
 
     addCategory(name: string): Result<Category> {
+      if (problem) return refuseWhileUnreadable()
       const checked = validateCategoryName(name)
       if (!checked.ok) return checked
       const category: Category = { id: crypto.randomUUID(), name: checked.value }
@@ -128,6 +177,7 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
 
     /** Changes a category's name under the same rules as adding one. Its expenses stay attached by id. */
     renameCategory(id: string, name: string): Result<Category> {
+      if (problem) return refuseWhileUnreadable()
       const found = findCategory(id)
       if (!found.ok) return found
       const checked = validateCategoryName(name, id)
@@ -145,6 +195,7 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
 
     /** Removes a category, moving its expenses to Other. Other itself can't be deleted. */
     deleteCategory(id: string): Result<{ category: Category; movedExpenseCount: number }> {
+      if (problem) return refuseWhileUnreadable()
       if (id === OTHER_CATEGORY_ID) {
         const other = data.categories.find((c) => c.id === OTHER_CATEGORY_ID)
         return fail('category', `${other?.name ?? 'Other'} can't be deleted: it's where expenses from deleted categories go.`)
@@ -163,6 +214,7 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
     },
 
     addExpense(input: ExpenseInput): Result<Expense> {
+      if (problem) return refuseWhileUnreadable()
       const checked = validate(input)
       if (!checked.ok) return checked
       const expense: Expense = { id: crypto.randomUUID(), ...checked.value }
@@ -173,6 +225,7 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
 
     /** Replaces every field of an existing expense, under the same rules as adding one. */
     editExpense(id: string, input: ExpenseInput): Result<Expense> {
+      if (problem) return refuseWhileUnreadable()
       const found = findExpense(id)
       if (!found.ok) return found
       const checked = validate(input)
@@ -186,6 +239,7 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
 
     /** Removes an expense, returning what was removed. */
     deleteExpense(id: string): Result<Expense> {
+      if (problem) return refuseWhileUnreadable()
       const found = findExpense(id)
       if (!found.ok) return found
       const [removed] = data.expenses.splice(found.value, 1)
@@ -248,6 +302,7 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
      * Returns how many categories and expenses were imported.
      */
     importFromJson(json: string): Result<{ categories: number; expenses: number }> {
+      if (problem) return refuseWhileUnreadable()
       const read = readTrackerJson(json, { today: today() })
       if (!read.ok) return fail('import', read.message)
       data = read.data
