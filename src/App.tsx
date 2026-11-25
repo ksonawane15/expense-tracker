@@ -12,8 +12,9 @@ export default function App() {
   const [, setRevision] = useState(0)
   const refresh = () => setRevision((r) => r + 1)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const month = tracker.currentMonth()
+  const [month, setMonth] = useState(() => tracker.currentMonth())
   const expenses = tracker.expensesInMonth(month)
+  const categoryTotals = tracker.categoryTotals(month)
   const categoryNames = new Map(tracker.categories().map((c) => [c.id, c.name]))
 
   function deleteExpense(expense: Expense) {
@@ -29,18 +30,44 @@ export default function App() {
     <main className="app">
       <header>
         <h1>Expenses</h1>
-        <p className="month">{formatMonth(month)}</p>
+        <nav className="month-switcher" aria-label="Month">
+          <button type="button" className="secondary" onClick={() => setMonth(tracker.previousMonth(month))} aria-label="Previous month">
+            ‹
+          </button>
+          <p className="month" aria-live="polite">
+            {formatMonth(month)}
+          </p>
+          <button type="button" className="secondary" onClick={() => setMonth(tracker.nextMonth(month))} aria-label="Next month">
+            ›
+          </button>
+        </nav>
         <p className="monthly-total" aria-label="Monthly total">
           {formatAmount(tracker.monthlyTotal(month))}
         </p>
       </header>
 
+      <section aria-labelledby="category-totals-heading">
+        <h2 id="category-totals-heading">By category</h2>
+        {categoryTotals.length === 0 ? (
+          <p className="empty">No expenses in {formatMonth(month)}.</p>
+        ) : (
+          <ul className="category-totals">
+            {categoryTotals.map((c) => (
+              <li key={c.categoryId}>
+                <span className="category-name">{c.name}</span>
+                <span className="category-total">{formatAmount(c.total)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       <ExpenseForm tracker={tracker} onSaved={refresh} />
 
       <section aria-labelledby="expenses-heading">
-        <h2 id="expenses-heading">This month</h2>
+        <h2 id="expenses-heading">Expenses in {formatMonth(month)}</h2>
         {expenses.length === 0 ? (
-          <p className="empty">No expenses this month yet.</p>
+          <p className="empty">Nothing recorded for this month.</p>
         ) : (
           <ul className="expense-list">
             {expenses.map((e) =>

@@ -44,3 +44,9 @@ export function formatExpenseDate(expenseDate: string): string {
 export function monthOf(calendarDate: string): string {
   return calendarDate.slice(0, 7)
 }
+
+/** The month `count` months after `month` (`YYYY-MM`); negative counts go back. */
+export function addMonths(month: string, count: number): string {
+  const date = toLocalDate(month)
+  return monthOf(toCalendarDate(new Date(date.getFullYear(), date.getMonth() + count, 1)))
+}
