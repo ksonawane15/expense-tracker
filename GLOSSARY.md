@@ -53,6 +53,24 @@ _Avoid_: Balance, spend, sum
 The sum of the amounts of a month's expenses in one category.
 _Avoid_: Breakdown, subtotal
 
+### Budgets
+
+**Category budget**:
+An optional amount the user aims to keep a category total under, which applies from the month it is set until changed; earlier months keep the amount that applied then. A category with no category budget has no warnings; that is different from a budget of zero.
+_Avoid_: Limit, cap, allowance
+
+**Overall budget**:
+An optional amount the user aims to keep the monthly total under, set separately from the category budgets. Like a category budget, it applies from the month it is set until changed.
+_Avoid_: Total budget, monthly limit
+
+**Close to budget**:
+The state of a month when its total has reached 80% of the budget but is not more than the budget.
+_Avoid_: Nearly over, approaching limit
+
+**Over budget**:
+The state of a month when its total is more than the budget.
+_Avoid_: Exceeded, overspent, breached
+
 ### Data
 
 **Export**:
