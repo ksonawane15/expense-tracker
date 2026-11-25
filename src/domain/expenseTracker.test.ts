@@ -657,7 +657,7 @@ describe('browsing months', () => {
 })
 
 describe('category totals', () => {
-  it("gives a category total for each category with spending in the month, largest first, leaving out the rest", () => {
+  it("gives a category total for each category with expenses in the month, largest first, leaving out the rest", () => {
     const { tracker } = setup()
     addOrFail(tracker, { ...valid, amount: '120', categoryId: 'food' })
     addOrFail(tracker, { ...valid, amount: '30.50', categoryId: 'food' })
@@ -683,6 +683,37 @@ describe('category totals', () => {
 
     expect(tracker.monthlyTotal('2026-11')).toBe(1_000_000_031)
     expect(totals.reduce((sum, c) => sum + c.total, 0)).toBe(1_000_000_031)
+  })
+
+  it('shows the new name after a rename, and the totals still add up exactly to the monthly total', () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, amount: '0.10', categoryId: 'food' })
+    addOrFail(tracker, { ...valid, amount: '0.20', categoryId: 'bills' })
+    tracker.renameCategory('food', 'Groceries')
+
+    const totals = tracker.categoryTotals('2026-11')
+
+    expect(totals).toEqual([
+      { categoryId: 'bills', name: 'Bills', total: 20 },
+      { categoryId: 'food', name: 'Groceries', total: 10 },
+    ])
+    expect(totals.reduce((sum, c) => sum + c.total, 0)).toBe(tracker.monthlyTotal('2026-11'))
+  })
+
+  it("counts a deleted category's expenses in Other's total, and the totals still add up to the monthly total", () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, amount: '0.10', categoryId: 'food' })
+    addOrFail(tracker, { ...valid, amount: '0.20', categoryId: 'other' })
+    addOrFail(tracker, { ...valid, amount: '5', categoryId: 'rent' })
+    tracker.deleteCategory('food')
+
+    const totals = tracker.categoryTotals('2026-11')
+
+    expect(totals).toEqual([
+      { categoryId: 'rent', name: 'Rent', total: 500 },
+      { categoryId: 'other', name: 'Other', total: 30 },
+    ])
+    expect(totals.reduce((sum, c) => sum + c.total, 0)).toBe(tracker.monthlyTotal('2026-11'))
   })
 
   it('gives no category totals for a month with no expenses', () => {
@@ -746,6 +777,15 @@ describe('stored data', () => {
     const { tracker } = setup(seeded(JSON.stringify(file)))
 
     expect(tracker.storedDataProblem()?.message).toMatch(/expense 2 .*amount/i)
+  })
+
+  it('loads stored data with an expense dated after today, as when the clock or time zone has moved back', () => {
+    const file = importFile()
+    file.expenses[1].expenseDate = '2026-11-25'
+    const { tracker } = setup(seeded(JSON.stringify(file)))
+
+    expect(tracker.storedDataProblem()).toBeNull()
+    expect(tracker.expensesInMonth('2026-11').map((e) => e.expenseDate)).toEqual(['2026-11-25', '2026-11-20'])
   })
 
   it('reports stored data from a newer schema version rather than guessing at it', () => {

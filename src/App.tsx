@@ -273,7 +273,7 @@ function CategoryManager({ tracker, onChanged }: CategoryManagerProps) {
 
   function remove(category: Category) {
     const moved = tracker.expensesMovedOnDelete(category.id)
-    const other = tracker.categories().find((c) => c.id === OTHER_CATEGORY_ID)?.name ?? 'Other'
+    const other = tracker.otherCategoryName()
     const consequence =
       moved === 0
         ? 'No expenses will move.'

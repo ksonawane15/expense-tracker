@@ -1,3 +1,8 @@
+/** A category name as compared for uniqueness: ignoring case and surrounding whitespace. */
+export function categoryNameKey(name: string): string {
+  return name.trim().toLowerCase()
+}
+
 /** A named bucket every expense belongs to exactly one of. */
 export interface Category {
   id: string
