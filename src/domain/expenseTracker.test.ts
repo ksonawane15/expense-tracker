@@ -305,6 +305,127 @@ describe('deleting an expense', () => {
   })
 })
 
+describe('adding a category', () => {
+  it('adds a category that can be chosen for an expense, and keeps it after a reload', () => {
+    const { tracker, storage } = setup()
+
+    const result = tracker.addCategory('  Travel  ')
+
+    expect(result).toMatchObject({ ok: true, value: { name: 'Travel' } })
+    if (!result.ok) return
+    expect(tracker.categories().map((c) => c.name)).toContain('Travel')
+    expect(tracker.addExpense({ ...valid, categoryId: result.value.id }).ok).toBe(true)
+    expect(setup(storage).tracker.categories()).toContainEqual(result.value)
+  })
+
+  it.each([
+    ['empty', ''],
+    ['only whitespace', '   '],
+    ['a duplicate', 'Food'],
+    ['a duplicate ignoring case', 'fOOd'],
+    ['a duplicate ignoring surrounding whitespace', '  other '],
+  ])('rejects a name that is %s, changing nothing', (_, name) => {
+    const { tracker, storage } = setup()
+    const before = structuredClone(tracker.categories())
+
+    const result = tracker.addCategory(name)
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'categoryName' } })
+    expect(tracker.categories()).toEqual(before)
+    expect(setup(storage).tracker.categories()).toEqual(before)
+  })
+})
+
+describe('renaming a category', () => {
+  it('renames it, keeps its expenses attached, and keeps the new name after a reload', () => {
+    const { tracker, storage } = setup()
+    const expense = addOrFail(tracker, { ...valid, categoryId: 'food' })
+
+    const result = tracker.renameCategory('food', ' Groceries ')
+
+    expect(result).toEqual({ ok: true, value: { id: 'food', name: 'Groceries' } })
+    const { tracker: reloaded } = setup(storage)
+    expect(reloaded.categories()).toContainEqual({ id: 'food', name: 'Groceries' })
+    expect(reloaded.categories().map((c) => c.name)).not.toContain('Food')
+    expect(reloaded.expensesInMonth('2026-11')).toEqual([expense])
+  })
+
+  it('lets a category change the case of its own name', () => {
+    const { tracker } = setup()
+
+    expect(tracker.renameCategory('food', 'FOOD')).toEqual({ ok: true, value: { id: 'food', name: 'FOOD' } })
+  })
+
+  it.each([
+    ['empty', '  '],
+    ["another category's name", 'transport'],
+  ])('rejects a new name that is %s, changing nothing', (_, name) => {
+    const { tracker, storage } = setup()
+    const before = structuredClone(tracker.categories())
+
+    const result = tracker.renameCategory('food', name)
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'categoryName' } })
+    expect(tracker.categories()).toEqual(before)
+    expect(setup(storage).tracker.categories()).toEqual(before)
+  })
+
+  it('refuses to rename a category that does not exist', () => {
+    const { tracker } = setup()
+
+    expect(tracker.renameCategory('no-such-category', 'Travel')).toMatchObject({
+      ok: false,
+      error: { field: 'category' },
+    })
+  })
+})
+
+describe('deleting a category', () => {
+  it('reports how many expenses, across every month, would move to Other', () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, categoryId: 'food', expenseDate: '2026-11-20' })
+    addOrFail(tracker, { ...valid, categoryId: 'food', expenseDate: '2026-09-01' })
+    addOrFail(tracker, { ...valid, categoryId: 'transport' })
+
+    expect(tracker.expensesMovedOnDelete('food')).toBe(2)
+    expect(tracker.expensesMovedOnDelete('rent')).toBe(0)
+  })
+
+  it('moves its expenses to Other and removes it, and both changes survive a reload', () => {
+    const { tracker, storage } = setup()
+    const food = addOrFail(tracker, { ...valid, categoryId: 'food' })
+    const transport = addOrFail(tracker, { ...valid, categoryId: 'transport' })
+
+    const result = tracker.deleteCategory('food')
+
+    expect(result).toEqual({ ok: true, value: { category: { id: 'food', name: 'Food' }, movedExpenseCount: 1 } })
+    const { tracker: reloaded } = setup(storage)
+    expect(reloaded.categories().map((c) => c.name)).not.toContain('Food')
+    expect(food.categoryId).toBe('food')
+    expect(reloaded.expensesInMonth('2026-11')).toEqual([transport, { ...food, categoryId: 'other' }])
+    expect(reloaded.monthlyTotal('2026-11')).toBe(20000)
+  })
+
+  it('refuses to delete a category that does not exist', () => {
+    const { tracker } = setup()
+
+    expect(tracker.deleteCategory('no-such-category')).toMatchObject({ ok: false, error: { field: 'category' } })
+  })
+
+  it('refuses to delete Other, even after it has been renamed', () => {
+    const { tracker, storage } = setup()
+    const expense = addOrFail(tracker, { ...valid, categoryId: 'other' })
+    tracker.renameCategory('other', 'Miscellaneous')
+
+    const result = tracker.deleteCategory('other')
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'category', message: expect.stringMatching(/can't be deleted/) } })
+    const { tracker: reloaded } = setup(storage)
+    expect(reloaded.categories()).toContainEqual({ id: 'other', name: 'Miscellaneous' })
+    expect(reloaded.expensesInMonth('2026-11')).toEqual([expense])
+  })
+})
+
 describe('exporting', () => {
   it('exports every category and every expense, in every month, in the stored data shape', () => {
     const { tracker } = setup()
@@ -501,3 +622,74 @@ function importFile() {
     ] as Record<string, unknown>[],
   }
 }
+
+describe('browsing months', () => {
+  it.each([
+    ['2026-11', '2026-10', '2026-12'],
+    ['2026-01', '2025-12', '2026-02'],
+    ['2026-12', '2026-11', '2027-01'],
+  ])('steps from %s back to %s and forward to %s', (month, previous, next) => {
+    const { tracker } = setup()
+
+    expect(tracker.previousMonth(month)).toBe(previous)
+    expect(tracker.nextMonth(month)).toBe(next)
+  })
+
+  it('counts expenses on the first and last days of a month in that month only', () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, amount: '1', expenseDate: '2026-09-30' })
+    addOrFail(tracker, { ...valid, amount: '10', expenseDate: '2026-10-01' })
+    addOrFail(tracker, { ...valid, amount: '100', expenseDate: '2026-10-31' })
+    addOrFail(tracker, { ...valid, amount: '1000', expenseDate: '2026-11-01' })
+
+    expect(tracker.monthlyTotal('2026-09')).toBe(100)
+    expect(tracker.monthlyTotal('2026-10')).toBe(11000)
+    expect(tracker.monthlyTotal('2026-11')).toBe(100000)
+  })
+
+  it('counts 29 February in February of a leap year', () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, amount: '5', expenseDate: '2024-02-29' })
+
+    expect(tracker.monthlyTotal('2024-02')).toBe(500)
+    expect(tracker.monthlyTotal('2024-03')).toBe(0)
+  })
+})
+
+describe('category totals', () => {
+  it("gives a category total for each category with spending in the month, largest first, leaving out the rest", () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, amount: '120', categoryId: 'food' })
+    addOrFail(tracker, { ...valid, amount: '30.50', categoryId: 'food' })
+    addOrFail(tracker, { ...valid, amount: '15000', categoryId: 'rent' })
+    addOrFail(tracker, { ...valid, amount: '45', categoryId: 'transport' })
+    addOrFail(tracker, { ...valid, amount: '999', categoryId: 'health', expenseDate: '2026-10-31' })
+
+    expect(tracker.categoryTotals('2026-11')).toEqual([
+      { categoryId: 'rent', name: 'Rent', total: 1_500_000 },
+      { categoryId: 'food', name: 'Food', total: 15050 },
+      { categoryId: 'transport', name: 'Transport', total: 4500 },
+    ])
+  })
+
+  it('category totals add up exactly to the monthly total', () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, amount: '0.10', categoryId: 'food' })
+    addOrFail(tracker, { ...valid, amount: '0.20', categoryId: 'bills' })
+    addOrFail(tracker, { ...valid, amount: '0.01', categoryId: 'other' })
+    addOrFail(tracker, { ...valid, amount: '10000000', categoryId: 'rent' })
+
+    const totals = tracker.categoryTotals('2026-11')
+
+    expect(tracker.monthlyTotal('2026-11')).toBe(1_000_000_031)
+    expect(totals.reduce((sum, c) => sum + c.total, 0)).toBe(1_000_000_031)
+  })
+
+  it('gives no category totals for a month with no expenses', () => {
+    const { tracker } = setup()
+    addOrFail(tracker)
+
+    expect(tracker.monthlyTotal('2026-08')).toBe(0)
+    expect(tracker.categoryTotals('2026-08')).toEqual([])
+  })
+})

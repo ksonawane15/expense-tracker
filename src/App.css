@@ -17,8 +17,52 @@
   margin: 0 0 12px;
 }
 
+.month-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .month {
   color: var(--text-muted);
+  margin: 0;
+  min-width: 9em;
+  text-align: center;
+}
+
+.month-switcher button {
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--text-h);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.category-totals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.category-totals li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-h);
+}
+
+.category-name {
+  overflow-wrap: anywhere;
+}
+
+.category-total {
+  font-variant-numeric: tabular-nums;
 }
 
 .monthly-total {
@@ -178,6 +222,78 @@
   .expense-actions {
     grid-column: 2 / -1;
   }
+}
+
+.category-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.category-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.category-name {
+  color: var(--text-h);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.category-rename,
+.category-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+.category-rename input,
+.category-add input {
+  flex: 1;
+  font: inherit;
+  font-size: 16px;
+  color: var(--text-h);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.category-rename button,
+.category-add button {
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-text);
+  background: var(--accent);
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.category-rename button.secondary {
+  color: var(--text-h);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.category-manager [aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.category-manager .error {
+  width: 100%;
+  margin: 0;
+  color: var(--danger);
+  font-size: 14px;
 }
 
 .data-controls p {
