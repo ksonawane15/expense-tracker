@@ -80,6 +80,14 @@ export default function App() {
       </section>
 
       <CategoryManager tracker={tracker} onChanged={refresh} />
+
+      <section className="data-controls" aria-labelledby="data-heading">
+        <h2 id="data-heading">Your data</h2>
+        <p>Your data is saved only in this browser. Export it to a file to keep a backup.</p>
+        <button type="button" onClick={() => downloadExport(tracker)}>
+          Export
+        </button>
+      </section>
     </main>
   )
 }
@@ -201,6 +209,17 @@ function CategoryManager({ tracker, onChanged }: CategoryManagerProps) {
       </form>
     </section>
   )
+}
+
+/** Saves the tracker's export as a JSON file; the tracker decides its content and name. */
+function downloadExport(tracker: ExpenseTracker) {
+  const blob = new Blob([tracker.exportToJson()], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = tracker.exportFileName()
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 interface ExpenseFormProps {

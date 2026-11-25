@@ -424,3 +424,37 @@ describe('deleting a category', () => {
     expect(reloaded.expensesInMonth('2026-11')).toEqual([expense])
   })
 })
+
+describe('exporting', () => {
+  it('exports every category and every expense, in every month, in the stored data shape', () => {
+    const { tracker } = setup()
+    const october = addOrFail(tracker, { ...valid, amount: '0.10', expenseDate: '2026-10-31' })
+    const november = addOrFail(tracker, { ...valid, amount: '1250.50', description: 'Electricity', categoryId: 'bills' })
+
+    const exported = JSON.parse(tracker.exportToJson())
+
+    expect(exported).toEqual({
+      schemaVersion: 1,
+      categories: [
+        { id: 'food', name: 'Food' },
+        { id: 'transport', name: 'Transport' },
+        { id: 'rent', name: 'Rent' },
+        { id: 'bills', name: 'Bills' },
+        { id: 'shopping', name: 'Shopping' },
+        { id: 'health', name: 'Health' },
+        { id: 'entertainment', name: 'Entertainment' },
+        { id: 'other', name: 'Other' },
+      ],
+      expenses: [
+        { id: october.id, amount: 10, description: 'Groceries', expenseDate: '2026-10-31', categoryId: 'food' },
+        { id: november.id, amount: 125050, description: 'Electricity', expenseDate: '2026-11-20', categoryId: 'bills' },
+      ],
+    })
+  })
+
+  it("names the export file with today's local date", () => {
+    const { tracker } = setup(fakeStorage(), new Date(2027, 0, 5, 23, 59))
+
+    expect(tracker.exportFileName()).toBe('expense-tracker-export-2027-01-05.json')
+  })
+})

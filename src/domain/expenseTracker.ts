@@ -191,6 +191,20 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
     monthlyTotal(month: string): number {
       return this.expensesInMonth(month).reduce((total, e) => total + e.amount, 0)
     },
+
+    /**
+     * Every category and expense, in every month, as a JSON string in exactly
+     * the stored data shape `{ schemaVersion, categories, expenses }`, with
+     * amounts in integer minor units (ADR-0002). Import reads this back.
+     */
+    exportToJson(): string {
+      return JSON.stringify(data, null, 2)
+    },
+
+    /** `expense-tracker-export-YYYY-MM-DD.json`, dated with today's local date. */
+    exportFileName(): string {
+      return `expense-tracker-export-${today()}.json`
+    },
   }
 }
 
