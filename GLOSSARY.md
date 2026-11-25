@@ -71,14 +71,36 @@ _Avoid_: Nearly over, approaching limit
 The state of a month when its total is more than the budget.
 _Avoid_: Exceeded, overspent, breached
 
+### Income and savings
+
+**Income**:
+A single record of money received: an amount, a description and an income date. It has no category and no payment method.
+_Avoid_: Earning, revenue, deposit, credit, salary
+
+**Income date**:
+The calendar day the money was received, with no time of day; never in the future. An income belongs to the month containing its income date.
+_Avoid_: Received date, pay day
+
+**Monthly income**:
+The sum of the amounts of every income in a month.
+_Avoid_: Earnings, revenue
+
+**Savings**:
+A month's monthly income minus its monthly total: the money not spent that month, which can be negative. It is worked out for one month at a time, never carried over, and is not money held in a savings account. A month with no income has no savings figure.
+_Avoid_: Balance, net, surplus, profit
+
 ### Recurring
 
 **Recurring expense**:
 A rule that records the same expense automatically on a repeating schedule (monthly on a day, weekly on a weekday, or yearly on a date), from a start date until it is stopped or reaches its optional end date. What it records are ordinary expenses; the rule itself is not an expense.
 _Avoid_: Template, subscription, schedule, repeating transaction
 
+**Recurring income**:
+The same kind of rule as a recurring expense, following the same rules, but it records income instead of expenses.
+_Avoid_: Salary rule, standing income
+
 **Due date**:
-A date on which a recurring expense falls, and the expense date of the expense it records then. A day the month doesn't have becomes the month's last day.
+A date on which a recurring expense or recurring income falls, and the date of the expense or income it records then. A day the month doesn't have becomes the month's last day.
 _Avoid_: Occurrence, run date, next payment
 
 ### Data
