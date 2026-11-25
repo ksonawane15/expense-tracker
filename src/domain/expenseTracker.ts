@@ -1,6 +1,7 @@
 import { addMonths, isCalendarDate, monthOf, toCalendarDate } from './calendarDate.ts'
 import { parseAmount } from './money.ts'
 import type { Repository } from './repository.ts'
+import { readTrackerJson } from './schema.ts'
 import { OTHER_CATEGORY_ID, type Category, type Expense } from './types.ts'
 
 export interface ExpenseTrackerOptions {
@@ -20,11 +21,12 @@ export interface ExpenseInput {
 /**
  * Why an operation was refused: a mistake in one input field (`categoryName`
  * for a category's name), `'expense'` when the expense being edited or deleted
- * no longer exists, or `'category'` when the category being renamed or deleted
- * no longer exists or is Other, which can't be deleted. Never thrown.
+ * no longer exists, `'category'` when the category being renamed or deleted
+ * no longer exists or is Other, which can't be deleted, or `'import'` when an
+ * import file was rejected. Never thrown.
  */
 export interface ValidationError {
-  field: keyof ExpenseInput | 'expense' | 'categoryName' | 'category'
+  field: keyof ExpenseInput | 'expense' | 'categoryName' | 'category' | 'import'
   message: string
 }
 
@@ -42,7 +44,7 @@ function fail(field: ValidationError['field'], message: string): Result<never> {
 }
 
 export function createExpenseTracker({ repository, clock = () => new Date() }: ExpenseTrackerOptions) {
-  const data = repository.load()
+  let data = repository.load()
 
   const today = () => toCalendarDate(clock())
 
@@ -237,6 +239,20 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
         .filter((c) => totals.has(c.id))
         .map((c) => ({ categoryId: c.id, name: c.name, total: totals.get(c.id)! }))
         .sort((a, b) => b.total - a.total)
+    },
+
+    /**
+     * Replaces all categories and expenses with an export file's content and
+     * saves it straight away. All or nothing: a file with any invalid content
+     * is rejected with the reason, and current data is left untouched.
+     * Returns how many categories and expenses were imported.
+     */
+    importFromJson(json: string): Result<{ categories: number; expenses: number }> {
+      const read = readTrackerJson(json, { today: today() })
+      if (!read.ok) return fail('import', read.message)
+      data = read.data
+      repository.save(data)
+      return { ok: true, value: { categories: data.categories.length, expenses: data.expenses.length } }
     },
   }
 }

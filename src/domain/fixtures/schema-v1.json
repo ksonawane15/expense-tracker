@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "categories": [
+    { "id": "food", "name": "Food" },
+    { "id": "transport", "name": "Transport" },
+    { "id": "rent", "name": "Rent" },
+    { "id": "bills", "name": "Bills" },
+    { "id": "shopping", "name": "Shopping" },
+    { "id": "health", "name": "Health" },
+    { "id": "entertainment", "name": "Entertainment" },
+    { "id": "other", "name": "Other" },
+    { "id": "3f0c2a7e-5b1d-4c8e-9a6f-1d2e3c4b5a69", "name": "Books" }
+  ],
+  "expenses": [
+    {
+      "id": "b7e4c1a2-9d3f-4e6b-8c5a-2f1e0d9c8b7a",
+      "amount": 1250,
+      "description": "Chai and samosa",
+      "expenseDate": "2026-10-31",
+      "categoryId": "food"
+    },
+    {
+      "id": "c8f5d2b3-0e4a-4f7c-9d6b-3a2f1e0d9c8b",
+      "amount": 2500000,
+      "description": "November rent",
+      "expenseDate": "2026-11-01",
+      "categoryId": "rent"
+    },
+    {
+      "id": "d9a6e3c4-1f5b-4a8d-8e7c-4b3a2f1e0d9c",
+      "amount": 49900,
+      "description": "Novel",
+      "expenseDate": "2026-11-24",
+      "categoryId": "3f0c2a7e-5b1d-4c8e-9a6f-1d2e3c4b5a69"
+    }
+  ]
+}

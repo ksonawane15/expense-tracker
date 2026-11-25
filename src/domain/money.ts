@@ -16,7 +16,7 @@ export function toAmountText(minorUnits: number): string {
 }
 
 /** ₹1,00,00,000 in minor units: the largest amount a single expense may have. */
-const MAX_AMOUNT = 1_000_000_000
+export const MAX_AMOUNT = 1_000_000_000
 
 /** An optional minus sign, whole rupees, then any number of decimal digits. */
 const NUMBER_PATTERN = /^(-?)(\d+)(?:\.(\d+))?$/
