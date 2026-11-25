@@ -65,6 +65,16 @@ describe('recording an expense', () => {
     expect(tracker.monthlyTotal('2026-11')).toBe(1250)
   })
 
+  it.each(['2026-10-01', '2026-10-31', '2026-09-30', '2026-02-28'])(
+    'counts an expense dated %s in its monthly total, including the last day of the month',
+    (expenseDate) => {
+      const { tracker } = setup()
+      tracker.addExpense({ ...valid, amount: '500', expenseDate })
+
+      expect(tracker.monthlyTotal(expenseDate.slice(0, 7))).toBe(50000)
+    },
+  )
+
   it('adds amounts exactly, with no floating-point drift', () => {
     const { tracker } = setup()
     tracker.addExpense({ ...valid, amount: '0.10' })

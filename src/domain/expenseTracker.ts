@@ -122,12 +122,8 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
 
     /** Sum of the month's amounts, in minor units. */
     monthlyTotal(month: string): number {
-      const [year, monthNumber] = month.split('-').map(Number)
-      const lastDay = String(new Date(year, monthNumber, 0).getDate()).padStart(2, '0')
-      const first = `${month}-01`
-      const last = `${month}-${lastDay}`
       return data.expenses
-        .filter((e) => e.expenseDate >= first && e.expenseDate < last)
+        .filter((e) => monthOf(e.expenseDate) === month)
         .reduce((total, e) => total + e.amount, 0)
     },
   }
