@@ -1,4 +1,4 @@
-import { isCalendarDate, monthOf, toCalendarDate } from './calendarDate.ts'
+import { addMonths, isCalendarDate, monthOf, toCalendarDate } from './calendarDate.ts'
 import { parseAmount } from './money.ts'
 import type { Repository } from './repository.ts'
 import type { Category, Expense } from './types.ts'
@@ -24,6 +24,13 @@ export interface ExpenseInput {
 export interface ValidationError {
   field: keyof ExpenseInput | 'expense'
   message: string
+}
+
+/** How much went on one category in a month, in minor units. */
+export interface CategoryTotal {
+  categoryId: string
+  name: string
+  total: number
 }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: ValidationError }
@@ -70,6 +77,16 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
     /** The month containing today, `YYYY-MM`: the month the app opens on. */
     currentMonth(): string {
       return monthOf(today())
+    },
+
+    /** The month (`YYYY-MM`) before `month`. */
+    previousMonth(month: string): string {
+      return addMonths(month, -1)
+    },
+
+    /** The month (`YYYY-MM`) after `month`. */
+    nextMonth(month: string): string {
+      return addMonths(month, 1)
     },
 
     categories(): Category[] {
@@ -123,6 +140,22 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
     /** Sum of the month's amounts, in minor units. */
     monthlyTotal(month: string): number {
       return this.expensesInMonth(month).reduce((total, e) => total + e.amount, 0)
+    },
+
+    /**
+     * A category total (minor units) for each category with spending in
+     * `month`, largest first; ties keep category order. Categories with no
+     * expenses that month are left out. Totals always add up to the monthly total.
+     */
+    categoryTotals(month: string): CategoryTotal[] {
+      const totals = new Map<string, number>()
+      for (const e of this.expensesInMonth(month)) {
+        totals.set(e.categoryId, (totals.get(e.categoryId) ?? 0) + e.amount)
+      }
+      return data.categories
+        .filter((c) => totals.has(c.id))
+        .map((c) => ({ categoryId: c.id, name: c.name, total: totals.get(c.id)! }))
+        .sort((a, b) => b.total - a.total)
     },
   }
 }

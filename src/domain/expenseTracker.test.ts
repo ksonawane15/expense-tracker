@@ -303,3 +303,74 @@ describe('deleting an expense', () => {
     expect(tracker.expensesInMonth('2026-11')).toEqual([expense])
   })
 })
+
+describe('browsing months', () => {
+  it.each([
+    ['2026-11', '2026-10', '2026-12'],
+    ['2026-01', '2025-12', '2026-02'],
+    ['2026-12', '2026-11', '2027-01'],
+  ])('steps from %s back to %s and forward to %s', (month, previous, next) => {
+    const { tracker } = setup()
+
+    expect(tracker.previousMonth(month)).toBe(previous)
+    expect(tracker.nextMonth(month)).toBe(next)
+  })
+
+  it('counts expenses on the first and last days of a month in that month only', () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, amount: '1', expenseDate: '2026-09-30' })
+    addOrFail(tracker, { ...valid, amount: '10', expenseDate: '2026-10-01' })
+    addOrFail(tracker, { ...valid, amount: '100', expenseDate: '2026-10-31' })
+    addOrFail(tracker, { ...valid, amount: '1000', expenseDate: '2026-11-01' })
+
+    expect(tracker.monthlyTotal('2026-09')).toBe(100)
+    expect(tracker.monthlyTotal('2026-10')).toBe(11000)
+    expect(tracker.monthlyTotal('2026-11')).toBe(100000)
+  })
+
+  it('counts 29 February in February of a leap year', () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, amount: '5', expenseDate: '2024-02-29' })
+
+    expect(tracker.monthlyTotal('2024-02')).toBe(500)
+    expect(tracker.monthlyTotal('2024-03')).toBe(0)
+  })
+})
+
+describe('category totals', () => {
+  it("gives a category total for each category with spending in the month, largest first, leaving out the rest", () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, amount: '120', categoryId: 'food' })
+    addOrFail(tracker, { ...valid, amount: '30.50', categoryId: 'food' })
+    addOrFail(tracker, { ...valid, amount: '15000', categoryId: 'rent' })
+    addOrFail(tracker, { ...valid, amount: '45', categoryId: 'transport' })
+    addOrFail(tracker, { ...valid, amount: '999', categoryId: 'health', expenseDate: '2026-10-31' })
+
+    expect(tracker.categoryTotals('2026-11')).toEqual([
+      { categoryId: 'rent', name: 'Rent', total: 1_500_000 },
+      { categoryId: 'food', name: 'Food', total: 15050 },
+      { categoryId: 'transport', name: 'Transport', total: 4500 },
+    ])
+  })
+
+  it('category totals add up exactly to the monthly total', () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, amount: '0.10', categoryId: 'food' })
+    addOrFail(tracker, { ...valid, amount: '0.20', categoryId: 'bills' })
+    addOrFail(tracker, { ...valid, amount: '0.01', categoryId: 'other' })
+    addOrFail(tracker, { ...valid, amount: '10000000', categoryId: 'rent' })
+
+    const totals = tracker.categoryTotals('2026-11')
+
+    expect(tracker.monthlyTotal('2026-11')).toBe(1_000_000_031)
+    expect(totals.reduce((sum, c) => sum + c.total, 0)).toBe(1_000_000_031)
+  })
+
+  it('gives no category totals for a month with no expenses', () => {
+    const { tracker } = setup()
+    addOrFail(tracker)
+
+    expect(tracker.monthlyTotal('2026-08')).toBe(0)
+    expect(tracker.categoryTotals('2026-08')).toEqual([])
+  })
+})
