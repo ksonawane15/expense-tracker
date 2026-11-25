@@ -303,3 +303,124 @@ describe('deleting an expense', () => {
     expect(tracker.expensesInMonth('2026-11')).toEqual([expense])
   })
 })
+
+describe('adding a category', () => {
+  it('adds a category that can be chosen for an expense, and keeps it after a reload', () => {
+    const { tracker, storage } = setup()
+
+    const result = tracker.addCategory('  Travel  ')
+
+    expect(result).toMatchObject({ ok: true, value: { name: 'Travel' } })
+    if (!result.ok) return
+    expect(tracker.categories().map((c) => c.name)).toContain('Travel')
+    expect(tracker.addExpense({ ...valid, categoryId: result.value.id }).ok).toBe(true)
+    expect(setup(storage).tracker.categories()).toContainEqual(result.value)
+  })
+
+  it.each([
+    ['empty', ''],
+    ['only whitespace', '   '],
+    ['a duplicate', 'Food'],
+    ['a duplicate ignoring case', 'fOOd'],
+    ['a duplicate ignoring surrounding whitespace', '  other '],
+  ])('rejects a name that is %s, changing nothing', (_, name) => {
+    const { tracker, storage } = setup()
+    const before = structuredClone(tracker.categories())
+
+    const result = tracker.addCategory(name)
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'categoryName' } })
+    expect(tracker.categories()).toEqual(before)
+    expect(setup(storage).tracker.categories()).toEqual(before)
+  })
+})
+
+describe('renaming a category', () => {
+  it('renames it, keeps its expenses attached, and keeps the new name after a reload', () => {
+    const { tracker, storage } = setup()
+    const expense = addOrFail(tracker, { ...valid, categoryId: 'food' })
+
+    const result = tracker.renameCategory('food', ' Groceries ')
+
+    expect(result).toEqual({ ok: true, value: { id: 'food', name: 'Groceries' } })
+    const { tracker: reloaded } = setup(storage)
+    expect(reloaded.categories()).toContainEqual({ id: 'food', name: 'Groceries' })
+    expect(reloaded.categories().map((c) => c.name)).not.toContain('Food')
+    expect(reloaded.expensesInMonth('2026-11')).toEqual([expense])
+  })
+
+  it('lets a category change the case of its own name', () => {
+    const { tracker } = setup()
+
+    expect(tracker.renameCategory('food', 'FOOD')).toEqual({ ok: true, value: { id: 'food', name: 'FOOD' } })
+  })
+
+  it.each([
+    ['empty', '  '],
+    ["another category's name", 'transport'],
+  ])('rejects a new name that is %s, changing nothing', (_, name) => {
+    const { tracker, storage } = setup()
+    const before = structuredClone(tracker.categories())
+
+    const result = tracker.renameCategory('food', name)
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'categoryName' } })
+    expect(tracker.categories()).toEqual(before)
+    expect(setup(storage).tracker.categories()).toEqual(before)
+  })
+
+  it('refuses to rename a category that does not exist', () => {
+    const { tracker } = setup()
+
+    expect(tracker.renameCategory('no-such-category', 'Travel')).toMatchObject({
+      ok: false,
+      error: { field: 'category' },
+    })
+  })
+})
+
+describe('deleting a category', () => {
+  it('reports how many expenses, across every month, would move to Other', () => {
+    const { tracker } = setup()
+    addOrFail(tracker, { ...valid, categoryId: 'food', expenseDate: '2026-11-20' })
+    addOrFail(tracker, { ...valid, categoryId: 'food', expenseDate: '2026-09-01' })
+    addOrFail(tracker, { ...valid, categoryId: 'transport' })
+
+    expect(tracker.expensesMovedOnDelete('food')).toBe(2)
+    expect(tracker.expensesMovedOnDelete('rent')).toBe(0)
+  })
+
+  it('moves its expenses to Other and removes it, and both changes survive a reload', () => {
+    const { tracker, storage } = setup()
+    const food = addOrFail(tracker, { ...valid, categoryId: 'food' })
+    const transport = addOrFail(tracker, { ...valid, categoryId: 'transport' })
+
+    const result = tracker.deleteCategory('food')
+
+    expect(result).toEqual({ ok: true, value: { category: { id: 'food', name: 'Food' }, movedExpenseCount: 1 } })
+    const { tracker: reloaded } = setup(storage)
+    expect(reloaded.categories().map((c) => c.name)).not.toContain('Food')
+    expect(food.categoryId).toBe('food')
+    expect(reloaded.expensesInMonth('2026-11')).toEqual([transport, { ...food, categoryId: 'other' }])
+    expect(reloaded.monthlyTotal('2026-11')).toBe(20000)
+  })
+
+  it('refuses to delete a category that does not exist', () => {
+    const { tracker } = setup()
+
+    expect(tracker.deleteCategory('no-such-category')).toMatchObject({ ok: false, error: { field: 'category' } })
+  })
+
+  it('refuses to delete Other, even after it has been renamed', () => {
+    const { tracker, storage } = setup()
+    const expense = addOrFail(tracker, { ...valid, categoryId: 'other' })
+    tracker.renameCategory('other', 'Miscellaneous')
+
+    const result = tracker.deleteCategory('other')
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'category', message: expect.stringMatching(/can't be deleted/) } })
+    const { tracker: reloaded } = setup(storage)
+    expect(reloaded.categories()).toContainEqual({ id: 'other', name: 'Miscellaneous' })
+    expect(reloaded.expensesInMonth('2026-11')).toEqual([expense])
+  })
+})
