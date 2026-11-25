@@ -5,15 +5,27 @@
  * is validated in full. Nothing invalid gets past, and nothing throws.
  */
 import { isCalendarDate } from './calendarDate.ts'
-import { MAX_AMOUNT } from './money.ts'
-import { OTHER_CATEGORY_ID, SCHEMA_VERSION, type Category, type Expense, type TrackerData } from './types.ts'
+import { formatAmount, MAX_AMOUNT } from './money.ts'
+import {
+  categoryNameKey,
+  OTHER_CATEGORY_ID,
+  SCHEMA_VERSION,
+  type Category,
+  type Expense,
+  type TrackerData,
+} from './types.ts'
 
 /** Either the data, checked and upgraded to the current schema, or why it was refused. */
 export type SchemaResult = { ok: true; data: TrackerData } | { ok: false; message: string }
 
 export interface ReadOptions {
-  /** Today's local calendar date, `YYYY-MM-DD`; expense dates after it are refused. */
-  today: string
+  /**
+   * Today's local calendar date, `YYYY-MM-DD`; expense dates after it are
+   * refused. Given for import files. Left out for stored data, which the app
+   * saved itself and which must not become unreadable just because the clock
+   * or time zone has moved back.
+   */
+  today?: string
 }
 
 /**
@@ -46,7 +58,9 @@ export function readTrackerData(blob: unknown, { today }: ReadOptions): SchemaRe
 
   let upgraded = blob
   for (let from = version; from < SCHEMA_VERSION; from++) {
-    upgraded = migrations[from]({ ...upgraded, schemaVersion: from })
+    const migrate = migrations[from]
+    if (!migrate) return refuse(`The data has schema version ${version}, which this app has no upgrade from.`)
+    upgraded = migrate({ ...upgraded, schemaVersion: from })
   }
   return validate(upgraded, today)
 }
@@ -63,7 +77,7 @@ export function readTrackerJson(text: string, options: ReadOptions): SchemaResul
 }
 
 /** Validates a blob already upgraded to the current schema, keeping only known fields. */
-function validate(blob: Record<string, unknown>, today: string): SchemaResult {
+function validate(blob: Record<string, unknown>, today: string | undefined): SchemaResult {
   if (!Array.isArray(blob.categories)) return refuse('The data has no list of categories.')
   if (!Array.isArray(blob.expenses)) return refuse('The data has no list of expenses.')
 
@@ -78,7 +92,7 @@ function validate(blob: Record<string, unknown>, today: string): SchemaResult {
     if (!isNonBlankString(name)) return refuse(`${where} has no name.`)
     if (categoryIds.has(id)) return refuse(`More than one category share the id "${id}".`)
     // Names are unique ignoring case and surrounding whitespace.
-    const nameKey = name.trim().toLowerCase()
+    const nameKey = categoryNameKey(name)
     const sameName = categoryNames.get(nameKey)
     if (sameName !== undefined) return refuse(`There is more than one category named "${sameName}".`)
     categoryIds.add(id)
@@ -101,13 +115,13 @@ function validate(blob: Record<string, unknown>, today: string): SchemaResult {
       return refuse(`${where} has an amount that is not a whole number of paise.`)
     }
     if (amount <= 0) return refuse(`${where} has an amount that is not more than zero.`)
-    if (amount > MAX_AMOUNT) return refuse(`${where} has an amount above ₹1,00,00,000.`)
+    if (amount > MAX_AMOUNT) return refuse(`${where} has an amount above ${formatAmount(MAX_AMOUNT)}.`)
     if (!isNonBlankString(description)) return refuse(`${where} has no description.`)
     if (expenseDate === undefined) return refuse(`${where} has no expense date.`)
     if (typeof expenseDate !== 'string' || !isCalendarDate(expenseDate)) {
       return refuse(`${where} has an expense date that is not a valid YYYY-MM-DD calendar day.`)
     }
-    if (expenseDate > today) return refuse(`${where} has an expense date in the future (${expenseDate}).`)
+    if (today !== undefined && expenseDate > today) return refuse(`${where} has an expense date in the future (${expenseDate}).`)
     if (!isNonBlankString(categoryId)) return refuse(`${where} has no category.`)
     if (!categoryIds.has(categoryId)) return refuse(`${where} points at a category that does not exist ("${categoryId}").`)
     expenses.push({ id, amount, description, expenseDate, categoryId })

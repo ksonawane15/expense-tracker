@@ -2,7 +2,14 @@ import { addMonths, isCalendarDate, monthOf, toCalendarDate } from './calendarDa
 import { parseAmount } from './money.ts'
 import type { Repository } from './repository.ts'
 import { readTrackerJson } from './schema.ts'
-import { defaultData, OTHER_CATEGORY_ID, type Category, type Expense } from './types.ts'
+import {
+  categoryNameKey,
+  defaultData,
+  OTHER_CATEGORY_ID,
+  type Category,
+  type Expense,
+  type TrackerData,
+} from './types.ts'
 
 export interface ExpenseTrackerOptions {
   repository: Repository
@@ -56,15 +63,25 @@ export interface StoredDataProblem {
 export function createExpenseTracker({ repository, clock = () => new Date() }: ExpenseTrackerOptions) {
   const today = () => toCalendarDate(clock())
 
-  const loaded = repository.load({ today: today() })
-  let problem: StoredDataProblem | null = loaded.ok
-    ? null
-    : {
-        message: loaded.message,
-        storedText: loaded.storedText,
-        fileName: `expense-tracker-unreadable-data-${today()}.txt`,
-      }
-  let data = loaded.ok ? loaded.data : defaultData()
+  let problem: StoredDataProblem | null = null
+  let data = defaultData()
+
+  // Stored data goes through the same validation and migration as an import,
+  // except that expense dates after today are allowed: the app saved them
+  // itself, and a clock or time zone that has moved back mustn't lock them out.
+  const storedText = repository.load()
+  if (storedText !== null) {
+    const read = readTrackerJson(storedText, {})
+    if (read.ok) {
+      data = read.data
+      // Data upgraded from an older schema version, or carrying fields the
+      // schema dropped, is saved back in the current schema so it is upgraded once.
+      if (JSON.stringify(data) !== storedText) repository.save(data)
+    } else {
+      // Never overwritten here: the user can download it before starting fresh.
+      problem = { message: read.message, storedText, fileName: `expense-tracker-unreadable-data-${today()}.txt` }
+    }
+  }
 
   function validate(input: ExpenseInput): Result<Omit<Expense, 'id'>> {
     const amount = parseAmount(input.amount)
@@ -94,8 +111,8 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
   function validateCategoryName(name: string, exceptId?: string): Result<string> {
     const trimmed = name.trim()
     if (trimmed === '') return fail('categoryName', 'Give the category a name.')
-    const key = trimmed.toLowerCase()
-    const clash = data.categories.find((c) => c.id !== exceptId && c.name.trim().toLowerCase() === key)
+    const key = categoryNameKey(trimmed)
+    const clash = data.categories.find((c) => c.id !== exceptId && categoryNameKey(c.name) === key)
     if (clash) return fail('categoryName', `There is already a category called ${clash.name}.`)
     return { ok: true, value: trimmed }
   }
@@ -107,11 +124,29 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
   }
 
   /**
-   * Every change saves the whole data blob, which would overwrite stored data
-   * that couldn't be read; so changes are refused until the user starts fresh.
+   * The one path every change takes. Every change saves the whole data blob,
+   * which would overwrite stored data that couldn't be read; so changes are
+   * refused until the user starts fresh. Otherwise `change` works out the new
+   * data from the current data, without modifying it, and it is kept and saved.
    */
-  function refuseWhileUnreadable(): Result<never> {
-    return fail('storedData', 'Your saved data could not be read. Download it or start fresh before making changes.')
+  function commit<T>(change: () => Result<{ next: TrackerData; value: T }>): Result<T> {
+    if (problem) {
+      return fail('storedData', 'Your saved data could not be read. Download it or start fresh before making changes.')
+    }
+    const changed = change()
+    if (!changed.ok) return changed
+    data = changed.value.next
+    repository.save(data)
+    return { ok: true, value: changed.value.value }
+  }
+
+  function changed<T>(next: TrackerData, value: T): Result<{ next: TrackerData; value: T }> {
+    return { ok: true, value: { next, value } }
+  }
+
+  /** Other's current name; stored data always has Other, as the schema checks. */
+  function otherCategoryName(): string {
+    return data.categories.find((c) => c.id === OTHER_CATEGORY_ID)?.name ?? 'Other'
   }
 
   /** The stored position of the expense with `id`, or an error if it no longer exists. */
@@ -165,27 +200,30 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
       return data.categories
     },
 
+    /** The current name of Other, which the user may have renamed. */
+    otherCategoryName(): string {
+      return otherCategoryName()
+    },
+
     addCategory(name: string): Result<Category> {
-      if (problem) return refuseWhileUnreadable()
-      const checked = validateCategoryName(name)
-      if (!checked.ok) return checked
-      const category: Category = { id: crypto.randomUUID(), name: checked.value }
-      data.categories.push(category)
-      repository.save(data)
-      return { ok: true, value: category }
+      return commit(() => {
+        const checked = validateCategoryName(name)
+        if (!checked.ok) return checked
+        const category: Category = { id: crypto.randomUUID(), name: checked.value }
+        return changed({ ...data, categories: [...data.categories, category] }, category)
+      })
     },
 
     /** Changes a category's name under the same rules as adding one. Its expenses stay attached by id. */
     renameCategory(id: string, name: string): Result<Category> {
-      if (problem) return refuseWhileUnreadable()
-      const found = findCategory(id)
-      if (!found.ok) return found
-      const checked = validateCategoryName(name, id)
-      if (!checked.ok) return checked
-      const category: Category = { id, name: checked.value }
-      data.categories[found.value] = category
-      repository.save(data)
-      return { ok: true, value: category }
+      return commit(() => {
+        const found = findCategory(id)
+        if (!found.ok) return found
+        const checked = validateCategoryName(name, id)
+        if (!checked.ok) return checked
+        const category: Category = { id, name: checked.value }
+        return changed({ ...data, categories: data.categories.with(found.value, category) }, category)
+      })
     },
 
     /** How many expenses, in any month, would move to Other if the category were deleted. */
@@ -195,56 +233,54 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
 
     /** Removes a category, moving its expenses to Other. Other itself can't be deleted. */
     deleteCategory(id: string): Result<{ category: Category; movedExpenseCount: number }> {
-      if (problem) return refuseWhileUnreadable()
-      if (id === OTHER_CATEGORY_ID) {
-        const other = data.categories.find((c) => c.id === OTHER_CATEGORY_ID)
-        return fail('category', `${other?.name ?? 'Other'} can't be deleted: it's where expenses from deleted categories go.`)
-      }
-      const found = findCategory(id)
-      if (!found.ok) return found
-      let movedExpenseCount = 0
-      data.expenses = data.expenses.map((e) => {
-        if (e.categoryId !== id) return e
-        movedExpenseCount++
-        return { ...e, categoryId: OTHER_CATEGORY_ID }
+      return commit(() => {
+        if (id === OTHER_CATEGORY_ID) {
+          return fail('category', `${otherCategoryName()} can't be deleted: it's where expenses from deleted categories go.`)
+        }
+        const found = findCategory(id)
+        if (!found.ok) return found
+        const category = data.categories[found.value]
+        let movedExpenseCount = 0
+        const expenses = data.expenses.map((e) => {
+          if (e.categoryId !== id) return e
+          movedExpenseCount++
+          return { ...e, categoryId: OTHER_CATEGORY_ID }
+        })
+        const categories = data.categories.toSpliced(found.value, 1)
+        return changed({ ...data, categories, expenses }, { category, movedExpenseCount })
       })
-      const [category] = data.categories.splice(found.value, 1)
-      repository.save(data)
-      return { ok: true, value: { category, movedExpenseCount } }
     },
 
     addExpense(input: ExpenseInput): Result<Expense> {
-      if (problem) return refuseWhileUnreadable()
-      const checked = validate(input)
-      if (!checked.ok) return checked
-      const expense: Expense = { id: crypto.randomUUID(), ...checked.value }
-      data.expenses.push(expense)
-      repository.save(data)
-      return { ok: true, value: expense }
+      return commit(() => {
+        const checked = validate(input)
+        if (!checked.ok) return checked
+        const expense: Expense = { id: crypto.randomUUID(), ...checked.value }
+        return changed({ ...data, expenses: [...data.expenses, expense] }, expense)
+      })
     },
 
     /** Replaces every field of an existing expense, under the same rules as adding one. */
     editExpense(id: string, input: ExpenseInput): Result<Expense> {
-      if (problem) return refuseWhileUnreadable()
-      const found = findExpense(id)
-      if (!found.ok) return found
-      const checked = validate(input)
-      if (!checked.ok) return checked
-      // Kept in place, so an edit doesn't count as "more recently added".
-      const expense: Expense = { id, ...checked.value }
-      data.expenses[found.value] = expense
-      repository.save(data)
-      return { ok: true, value: expense }
+      return commit(() => {
+        const found = findExpense(id)
+        if (!found.ok) return found
+        const checked = validate(input)
+        if (!checked.ok) return checked
+        // Kept in place, so an edit doesn't count as "more recently added".
+        const expense: Expense = { id, ...checked.value }
+        return changed({ ...data, expenses: data.expenses.with(found.value, expense) }, expense)
+      })
     },
 
     /** Removes an expense, returning what was removed. */
     deleteExpense(id: string): Result<Expense> {
-      if (problem) return refuseWhileUnreadable()
-      const found = findExpense(id)
-      if (!found.ok) return found
-      const [removed] = data.expenses.splice(found.value, 1)
-      repository.save(data)
-      return { ok: true, value: removed }
+      return commit(() => {
+        const found = findExpense(id)
+        if (!found.ok) return found
+        const removed = data.expenses[found.value]
+        return changed({ ...data, expenses: data.expenses.toSpliced(found.value, 1) }, removed)
+      })
     },
 
     /**
@@ -280,7 +316,7 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
     },
 
     /**
-     * A category total (minor units) for each category with spending in
+     * A category total (minor units) for each category with expenses in
      * `month`, largest first; ties keep category order. Categories with no
      * expenses that month are left out. Totals always add up to the monthly total.
      */
@@ -302,12 +338,12 @@ export function createExpenseTracker({ repository, clock = () => new Date() }: E
      * Returns how many categories and expenses were imported.
      */
     importFromJson(json: string): Result<{ categories: number; expenses: number }> {
-      if (problem) return refuseWhileUnreadable()
-      const read = readTrackerJson(json, { today: today() })
-      if (!read.ok) return fail('import', read.message)
-      data = read.data
-      repository.save(data)
-      return { ok: true, value: { categories: data.categories.length, expenses: data.expenses.length } }
+      return commit(() => {
+        const read = readTrackerJson(json, { today: today() })
+        if (!read.ok) return fail('import', read.message)
+        const { categories, expenses } = read.data
+        return changed(read.data, { categories: categories.length, expenses: expenses.length })
+      })
     },
   }
 }
