@@ -71,6 +71,16 @@ _Avoid_: Nearly over, approaching limit
 The state of a month when its total is more than the budget.
 _Avoid_: Exceeded, overspent, breached
 
+### Recurring
+
+**Recurring expense**:
+A rule that records the same expense automatically on a repeating schedule (monthly on a day, weekly on a weekday, or yearly on a date), from a start date until it is stopped or reaches its optional end date. What it records are ordinary expenses; the rule itself is not an expense.
+_Avoid_: Template, subscription, schedule, repeating transaction
+
+**Due date**:
+A date on which a recurring expense falls, and the expense date of the expense it records then. A day the month doesn't have becomes the month's last day.
+_Avoid_: Occurrence, run date, next payment
+
 ### Data
 
 **Export**:
