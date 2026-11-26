@@ -7,7 +7,7 @@ A personal app for one person to record what they spend money on, group it by ca
 ### Spending
 
 **Expense**:
-A single record of money spent: an amount, a description of what it was for, an expense date, and exactly one category.
+A single record of money spent: an amount, a description of what it was for, an expense date, exactly one category, and optionally one payment method.
 _Avoid_: Transaction, entry, purchase, item
 
 **Amount**:
@@ -39,6 +39,13 @@ The starting set of categories: Food, Transport, Rent, Bills, Shopping, Health, 
 The fallback category, which can't be deleted. Expenses from a deleted category move here.
 _Avoid_: Uncategorised, misc
 
+**Payment method**:
+How an expense was paid, such as Cash or UPI. An expense has at most one; having none is allowed. The user can add, rename and delete payment methods.
+_Avoid_: Payment mode, account, instrument, source
+
+**Default payment methods**:
+The starting set of payment methods: Cash, UPI, Card.
+
 ### Reporting
 
 **Month**:
@@ -53,11 +60,65 @@ _Avoid_: Balance, spend, sum
 The sum of the amounts of a month's expenses in one category.
 _Avoid_: Breakdown, subtotal
 
+### Budgets
+
+**Category budget**:
+An optional amount the user aims to keep a category total under, which applies from the month it is set until changed; earlier months keep the amount that applied then. A category with no category budget has no warnings; that is different from a budget of zero.
+_Avoid_: Limit, cap, allowance
+
+**Overall budget**:
+An optional amount the user aims to keep the monthly total under, set separately from the category budgets. Like a category budget, it applies from the month it is set until changed.
+_Avoid_: Total budget, monthly limit
+
+**Close to budget**:
+The state of a month when its total has reached 80% of the budget but is not more than the budget.
+_Avoid_: Nearly over, approaching limit
+
+**Over budget**:
+The state of a month when its total is more than the budget.
+_Avoid_: Exceeded, overspent, breached
+
+### Income and savings
+
+**Income**:
+A single record of money received: an amount, a description and an income date. It has no category and no payment method.
+_Avoid_: Earning, revenue, deposit, credit, salary
+
+**Income date**:
+The calendar day the money was received, with no time of day; never in the future. An income belongs to the month containing its income date.
+_Avoid_: Received date, pay day
+
+**Monthly income**:
+The sum of the amounts of every income in a month.
+_Avoid_: Earnings, revenue
+
+**Savings**:
+A month's monthly income minus its monthly total: the money not spent that month, which can be negative. It is worked out for one month at a time, never carried over, and is not money held in a savings account. A month with no income has no savings figure.
+_Avoid_: Balance, net, surplus, profit
+
+### Recurring
+
+**Recurring expense**:
+A rule that records the same expense automatically on a repeating schedule (monthly on a day, weekly on a weekday, or yearly on a date), from a start date until it is stopped or reaches its optional end date. What it records are ordinary expenses; the rule itself is not an expense.
+_Avoid_: Template, subscription, schedule, repeating transaction
+
+**Recurring income**:
+The same kind of rule as a recurring expense, following the same rules, but it records income instead of expenses.
+_Avoid_: Salary rule, standing income
+
+**Due date**:
+A date on which a recurring expense or recurring income falls, and the date of the expense or income it records then. A day the month doesn't have becomes the month's last day.
+_Avoid_: Occurrence, run date, next payment
+
 ### Data
 
 **Export**:
 A JSON file containing all categories and expenses, used as a backup.
 _Avoid_: Backup file, dump
+
+**CSV export**:
+A spreadsheet file of expenses and income, one row each, for reading in a spreadsheet app. It is one-way: it can't be imported, and it is not a backup.
+_Avoid_: Export (that is the JSON backup), report, download
 
 **Import**:
 Loading an export file, which replaces all current data; a file with any invalid content is rejected and nothing changes.
