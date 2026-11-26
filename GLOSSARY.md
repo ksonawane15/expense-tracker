@@ -113,7 +113,7 @@ _Avoid_: Occurrence, run date, next payment
 ### Data
 
 **Export**:
-A JSON file containing all categories and expenses, used as a backup.
+A JSON file containing all data (every kind of record, deleted ones included), used as a backup and to move data between devices.
 _Avoid_: Backup file, dump
 
 **CSV export**:
