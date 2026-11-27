@@ -1,18 +1,12 @@
-import { useRef, useState, type FormEvent } from 'react'
+import { createContext, use, useContext, useRef, useState, type FormEvent } from 'react'
 import './App.css'
 import { formatExpenseDate, formatMonth } from './domain/calendarDate.ts'
-import {
-  createExpenseTracker,
-  type ExpenseTracker,
-  type StoredDataProblem,
-  type ValidationError,
-} from './domain/expenseTracker.ts'
-import { createLocalStorageRepository } from './domain/localStorageRepository.ts'
+import type { ExpenseTracker, Result, StoredDataProblem, ValidationError } from './domain/expenseTracker.ts'
 import { formatAmount, toAmountText } from './domain/money.ts'
 import { OTHER_CATEGORY_ID, type Category, type Expense } from './domain/types.ts'
 
-export default function App() {
-  const [tracker] = useState(() => createExpenseTracker({ repository: createLocalStorageRepository() }))
+export default function App({ tracker: opening }: { tracker: Promise<ExpenseTracker> }) {
+  const tracker = use(opening)
   // The tracker owns the data; bumping this re-renders after each change.
   const [, setRevision] = useState(0)
   const refresh = () => setRevision((r) => r + 1)
@@ -20,6 +14,18 @@ export default function App() {
   // Nothing that could save is shown until the user has dealt with unreadable stored data.
   if (problem) return <StoredDataProblemScreen tracker={tracker} problem={problem} onStartedFresh={refresh} />
   return <ExpenseTrackerScreen tracker={tracker} refresh={refresh} />
+}
+
+/** Tells the screen that a change couldn't be saved and was undone, so it can offer an export. */
+const SaveFailedContext = createContext<() => void>(() => {})
+
+/** Passes a change's result through, raising the "couldn't be saved" message when its save failed. */
+function useSaveCheck() {
+  const saveFailed = useContext(SaveFailedContext)
+  return <T,>(result: Result<T>): Result<T> => {
+    if (!result.ok && result.error.field === 'save') saveFailed()
+    return result
+  }
 }
 
 interface StoredDataProblemScreenProps {
@@ -32,13 +38,13 @@ interface StoredDataProblemScreenProps {
 function StoredDataProblemScreen({ tracker, problem, onStartedFresh }: StoredDataProblemScreenProps) {
   const [error, setError] = useState<string | null>(null)
 
-  function startFresh() {
+  async function startFresh() {
     const confirmed = window.confirm(
       'Start fresh with the default categories and no expenses? Your saved data will be replaced and can’t be ' +
         'recovered here afterwards. Download it first if you want to keep a copy.',
     )
     if (!confirmed) return
-    const result = tracker.startFresh()
+    const result = await tracker.startFresh()
     if (!result.ok) {
       setError(result.error.message)
       return
@@ -51,14 +57,20 @@ function StoredDataProblemScreen({ tracker, problem, onStartedFresh }: StoredDat
       <section className="data-controls" aria-labelledby="stored-data-heading">
         <h1 id="stored-data-heading">Your saved data couldn’t be read</h1>
         <p role="alert">{problem.message}</p>
-        <p>
-          Nothing has been changed or deleted. Download the saved data to keep a copy you can fix and import later,
-          then start fresh with the default categories.
-        </p>
+        {problem.storedText === null ? (
+          <p>Nothing has been changed or deleted. Reload to try again, or start fresh with the default categories.</p>
+        ) : (
+          <p>
+            Nothing has been changed or deleted. Download the saved data to keep a copy you can fix and import later,
+            then start fresh with the default categories.
+          </p>
+        )}
         <div className="data-actions">
-          <button type="button" onClick={() => downloadFile(problem.storedText, problem.fileName, 'text/plain')}>
-            Download saved data
-          </button>
+          {problem.storedText !== null && (
+            <button type="button" onClick={() => downloadFile(problem.storedText!, problem.fileName, 'text/plain')}>
+              Download saved data
+            </button>
+          )}
           <button type="button" className="danger" onClick={startFresh}>
             Start fresh
           </button>
@@ -78,7 +90,34 @@ interface ExpenseTrackerScreenProps {
   refresh: () => void
 }
 
-function ExpenseTrackerScreen({ tracker, refresh }: ExpenseTrackerScreenProps) {
+function ExpenseTrackerScreen(props: ExpenseTrackerScreenProps) {
+  const [saveFailed, setSaveFailed] = useState(false)
+  const reportSaveFailed = () => {
+    setSaveFailed(true)
+    props.refresh()
+  }
+  return (
+    <SaveFailedContext value={reportSaveFailed}>
+      {saveFailed && (
+        <div className="save-failed" role="alert">
+          <p>A change couldn’t be saved, so it has been undone. Export your data now to keep a copy of everything saved so far.</p>
+          <div className="data-actions">
+            <button type="button" onClick={() => downloadExport(props.tracker)}>
+              Export now
+            </button>
+            <button type="button" className="secondary" onClick={() => setSaveFailed(false)}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+      <MonthScreen {...props} />
+    </SaveFailedContext>
+  )
+}
+
+function MonthScreen({ tracker, refresh }: ExpenseTrackerScreenProps) {
+  const checkSave = useSaveCheck()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [importStatus, setImportStatus] = useState<{ ok: boolean; message: string } | null>(null)
   const importInput = useRef<HTMLInputElement>(null)
@@ -87,22 +126,22 @@ function ExpenseTrackerScreen({ tracker, refresh }: ExpenseTrackerScreenProps) {
   const categoryTotals = tracker.categoryTotals(month)
   const categoryNames = new Map(tracker.categories().map((c) => [c.id, c.name]))
 
-  function deleteExpense(expense: Expense) {
+  async function deleteExpense(expense: Expense) {
     const summary = `${expense.description} (${formatAmount(expense.amount)})`
     if (!window.confirm(`Delete the expense "${summary}"? This can't be undone.`)) return
     // If it was already gone there is nothing to undo; refreshing shows the list as it is.
-    tracker.deleteExpense(expense.id)
-    if (editingId === expense.id) setEditingId(null)
+    const result = checkSave(await tracker.deleteExpense(expense.id))
+    if (result.ok && editingId === expense.id) setEditingId(null)
     refresh()
   }
 
   async function importFile(file: File) {
     const confirmed = window.confirm(
-      `Import "${file.name}"? This replaces all your current categories and expenses, and can't be undone. ` +
+      `Import "${file.name}"? This replaces all your current data, and can't be undone. ` +
         'Export first if you want to keep a copy.',
     )
     if (!confirmed) return
-    const result = tracker.importFromJson(await file.text())
+    const result = checkSave(await tracker.importFromJson(await file.text()))
     if (!result.ok) {
       setImportStatus({ ok: false, message: `Nothing was imported. ${result.error.message}` })
       return
@@ -240,10 +279,11 @@ function CategoryManager({ tracker, onChanged }: CategoryManagerProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameText, setRenameText] = useState('')
   const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null)
+  const checkSave = useSaveCheck()
 
-  function add(event: FormEvent) {
+  async function add(event: FormEvent) {
     event.preventDefault()
-    const result = tracker.addCategory(newName)
+    const result = checkSave(await tracker.addCategory(newName))
     if (!result.ok) {
       setAddError(result.error)
       return
@@ -259,9 +299,9 @@ function CategoryManager({ tracker, onChanged }: CategoryManagerProps) {
     setRowError(null)
   }
 
-  function saveRename(event: FormEvent, id: string) {
+  async function saveRename(event: FormEvent, id: string) {
     event.preventDefault()
-    const result = tracker.renameCategory(id, renameText)
+    const result = checkSave(await tracker.renameCategory(id, renameText))
     if (!result.ok) {
       setRowError({ id, message: result.error.message })
       return
@@ -271,7 +311,7 @@ function CategoryManager({ tracker, onChanged }: CategoryManagerProps) {
     onChanged()
   }
 
-  function remove(category: Category) {
+  async function remove(category: Category) {
     const moved = tracker.expensesMovedOnDelete(category.id)
     const other = tracker.otherCategoryName()
     const consequence =
@@ -279,7 +319,7 @@ function CategoryManager({ tracker, onChanged }: CategoryManagerProps) {
         ? 'No expenses will move.'
         : `${moved} ${moved === 1 ? 'expense' : 'expenses'} will move to ${other}.`
     if (!window.confirm(`Delete the category "${category.name}"? ${consequence}`)) return
-    const result = tracker.deleteCategory(category.id)
+    const result = checkSave(await tracker.deleteCategory(category.id))
     setRowError(result.ok ? null : { id: category.id, message: result.error.message })
     if (renamingId === category.id) setRenamingId(null)
     onChanged()
@@ -380,11 +420,12 @@ function ExpenseForm({ tracker, expenseToEdit, onSaved, onCancel }: ExpenseFormP
   // If the chosen category has since been deleted, its expenses went to Other, so the form follows.
   const categoryId = tracker.categories().some((c) => c.id === chosenCategoryId) ? chosenCategoryId : OTHER_CATEGORY_ID
   const [error, setError] = useState<ValidationError | null>(null)
+  const checkSave = useSaveCheck()
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault()
     const input = { amount, description, expenseDate, categoryId }
-    const result = expenseToEdit ? tracker.editExpense(expenseToEdit.id, input) : tracker.addExpense(input)
+    const result = checkSave(await (expenseToEdit ? tracker.editExpense(expenseToEdit.id, input) : tracker.addExpense(input)))
     if (!result.ok) {
       setError(result.error)
       return
