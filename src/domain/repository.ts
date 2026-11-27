@@ -1,18 +1,27 @@
-import type { TrackerData } from './types.ts'
+import type { RecordKind, RecordsByKind, TrackerData } from './types.ts'
 
 /**
- * The only way the app reaches stored data (ADR-0001), so localStorage can be
- * swapped for IndexedDB or a backend without touching the UI or domain rules.
- * It only stores and returns data: checking, migrating and choosing defaults
- * are the expense tracker module's job.
+ * Stored records exactly as found, unchecked: they may be corrupt, or from an
+ * older schema. The expense tracker module checks and upgrades them.
+ */
+export type StoredRecords = { schemaVersion: unknown } & { [K in RecordKind]: unknown[] }
+
+/**
+ * The only way the app reaches stored data (ADR-0001, ADR-0003). It only
+ * stores and returns records: checking, migrating and choosing defaults are
+ * the expense tracker module's job. Every write is all or nothing: if it
+ * fails, the promise rejects and nothing it was given has been stored.
  */
 export interface Repository {
+  /** Everything stored, or `null` when nothing has been stored yet. Rejects if storage can't be opened. */
+  load(): Promise<StoredRecords | null>
   /**
-   * The stored data as JSON text, exactly as stored and unchecked (it may be
-   * corrupt, or from an older schema), or `null` on first run when nothing
-   * has been stored yet.
+   * Stores `data` only if nothing is stored yet, resolving `true`; otherwise
+   * changes nothing and resolves `false` (another window got there first).
    */
-  load(): string | null
-  /** Persists `data`, replacing whatever was stored. */
-  save(data: TrackerData): void
+  create(data: TrackerData): Promise<boolean>
+  /** Adds or replaces the given records by `id`, leaving every other record as it is. */
+  put(records: Partial<RecordsByKind>): Promise<void>
+  /** Replaces everything stored with `data`. */
+  replaceAll(data: TrackerData): Promise<void>
 }

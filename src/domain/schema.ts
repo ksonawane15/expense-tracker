@@ -1,17 +1,20 @@
 /**
  * The schema and migration module. Every data blob the app reads, whether an
- * import file or stored data (ADR-0001), goes through here: its schema version
- * is checked, it is upgraded step by step to the current schema, and then it
- * is validated in full. Nothing invalid gets past, and nothing throws.
+ * import file, stored records or v1 data being upgraded, goes through here:
+ * its schema version is checked, it is upgraded step by step to the current
+ * schema, and then it is validated in full. Nothing invalid gets past, and
+ * nothing throws.
  */
 import { isCalendarDate } from './calendarDate.ts'
 import { formatAmount, MAX_AMOUNT } from './money.ts'
 import {
+  byCreation,
   categoryNameKey,
   OTHER_CATEGORY_ID,
   SCHEMA_VERSION,
   type Category,
   type Expense,
+  type SyncFields,
   type TrackerData,
 } from './types.ts'
 
@@ -26,23 +29,45 @@ export interface ReadOptions {
    * or time zone has moved back.
    */
   today?: string
+  /** When the data is being read: records upgraded from v1 get their times from it. */
+  now: Date
 }
+
+type Blob = Record<string, unknown>
 
 /**
  * `migrations[n]` upgrades a version-n blob to version n + 1. It may assume
  * the blob is a plain object but nothing else: the result is validated after
- * the last step. Changing the data shape means bumping SCHEMA_VERSION, adding
- * the migration from the old version here, and adding a fixture file for the
- * old version (in ./fixtures) with a test that imports it.
+ * the last step. Changing the data shape after a schema version is released
+ * means bumping SCHEMA_VERSION, adding the migration from the old version
+ * here, and adding a fixture file for the old version (in ./fixtures) with a
+ * test that imports it.
  */
-const migrations: Record<number, (blob: Record<string, unknown>) => Record<string, unknown>> = {}
+const migrations: Record<number, (blob: Blob, now: Date) => Blob> = {
+  /**
+   * v1 → v2: records become sync-ready (ADR-0003). v1 kept no times, so every
+   * record is stamped with the upgrade time, a millisecond apart in stored
+   * order (categories, then expenses), so they keep their order. Nothing is
+   * deleted, and v1 ids are kept.
+   */
+  1(blob, now) {
+    let tick = 0
+    const stamp = (record: unknown) => {
+      if (!isObject(record)) return record
+      const time = new Date(now.getTime() + tick++).toISOString()
+      return { ...record, createdAt: time, updatedAt: time }
+    }
+    const stampAll = (list: unknown) => (Array.isArray(list) ? list.map(stamp) : list)
+    return { ...blob, categories: stampAll(blob.categories), expenses: stampAll(blob.expenses) }
+  },
+}
 
 /**
- * Checks a parsed data blob from any source (an import file or stored data),
- * upgrades it to the current schema, and validates it in full. Fields the
- * schema doesn't define are dropped.
+ * Checks a parsed data blob from any source, upgrades it to the current
+ * schema, and validates it in full. Fields the schema doesn't define are
+ * dropped, and each list comes back in creation order.
  */
-export function readTrackerData(blob: unknown, { today }: ReadOptions): SchemaResult {
+export function readTrackerData(blob: unknown, { today, now }: ReadOptions): SchemaResult {
   if (!isObject(blob)) return refuse('The data is not expense tracker data.')
 
   const version = blob.schemaVersion
@@ -60,7 +85,7 @@ export function readTrackerData(blob: unknown, { today }: ReadOptions): SchemaRe
   for (let from = version; from < SCHEMA_VERSION; from++) {
     const migrate = migrations[from]
     if (!migrate) return refuse(`The data has schema version ${version}, which this app has no upgrade from.`)
-    upgraded = migrate({ ...upgraded, schemaVersion: from })
+    upgraded = migrate({ ...upgraded, schemaVersion: from }, now)
   }
   return validate(upgraded, today)
 }
@@ -76,65 +101,123 @@ export function readTrackerJson(text: string, options: ReadOptions): SchemaResul
   return readTrackerData(blob, options)
 }
 
+/** Thrown inside validation only, and always caught there: why the data was refused. */
+class Refusal {
+  readonly message: string
+  constructor(message: string) {
+    this.message = message
+  }
+}
+
 /** Validates a blob already upgraded to the current schema, keeping only known fields. */
-function validate(blob: Record<string, unknown>, today: string | undefined): SchemaResult {
-  if (!Array.isArray(blob.categories)) return refuse('The data has no list of categories.')
-  if (!Array.isArray(blob.expenses)) return refuse('The data has no list of expenses.')
+function validate(blob: Blob, today: string | undefined): SchemaResult {
+  try {
+    return { ok: true, data: validateOrThrow(blob, today) }
+  } catch (error) {
+    if (error instanceof Refusal) return refuse(error.message)
+    throw error
+  }
+}
+
+function validateOrThrow(blob: Blob, today: string | undefined): TrackerData {
+  if (!Array.isArray(blob.categories)) throw new Refusal('The data has no list of categories.')
+  if (!Array.isArray(blob.expenses)) throw new Refusal('The data has no list of expenses.')
 
   const categories: Category[] = []
-  const categoryIds = new Set<string>()
-  const categoryNames = new Map<string, string>()
+  /** Whether each category id is live. */
+  const categoryLive = new Map<string, boolean>()
+  /** Live category names only: a deleted category's name may be used again. */
+  const liveNames = new Map<string, string>()
   for (const [index, raw] of blob.categories.entries()) {
     const where = `Category ${index + 1}`
-    if (!isObject(raw)) return refuse(`${where} is not a category.`)
+    if (!isObject(raw)) throw new Refusal(`${where} is not a category.`)
     const { id, name } = raw
-    if (!isNonBlankString(id)) return refuse(`${where} has no id.`)
-    if (!isNonBlankString(name)) return refuse(`${where} has no name.`)
-    if (categoryIds.has(id)) return refuse(`More than one category share the id "${id}".`)
-    // Names are unique ignoring case and surrounding whitespace.
-    const nameKey = categoryNameKey(name)
-    const sameName = categoryNames.get(nameKey)
-    if (sameName !== undefined) return refuse(`There is more than one category named "${sameName}".`)
-    categoryIds.add(id)
-    categoryNames.set(nameKey, name.trim())
-    categories.push({ id, name })
+    if (!isNonBlankString(id)) throw new Refusal(`${where} has no id.`)
+    if (!isNonBlankString(name)) throw new Refusal(`${where} has no name.`)
+    if (categoryLive.has(id)) throw new Refusal(`More than one category share the id "${id}".`)
+    const sync = syncFields(raw, where)
+    const live = sync.deletedAt === undefined
+    if (live) {
+      // Names are unique among live categories, ignoring case and surrounding whitespace.
+      const nameKey = categoryNameKey(name)
+      const sameName = liveNames.get(nameKey)
+      if (sameName !== undefined) throw new Refusal(`There is more than one category named "${sameName}".`)
+      liveNames.set(nameKey, name.trim())
+    }
+    categoryLive.set(id, live)
+    categories.push(withSyncFields({ id, name }, sync))
   }
-  if (!categoryIds.has(OTHER_CATEGORY_ID)) return refuse('The data has no Other category.')
+  if (!categoryLive.has(OTHER_CATEGORY_ID)) throw new Refusal('The data has no Other category.')
+  if (!categoryLive.get(OTHER_CATEGORY_ID)) throw new Refusal('The Other category is marked deleted, but it can never be deleted.')
 
   const expenses: Expense[] = []
   const expenseIds = new Set<string>()
   for (const [index, raw] of blob.expenses.entries()) {
     const where = `Expense ${index + 1}`
-    if (!isObject(raw)) return refuse(`${where} is not an expense.`)
+    if (!isObject(raw)) throw new Refusal(`${where} is not an expense.`)
     const { id, amount, description, expenseDate, categoryId } = raw
-    if (!isNonBlankString(id)) return refuse(`${where} has no id.`)
-    if (expenseIds.has(id)) return refuse(`More than one expense share the id "${id}".`)
+    if (!isNonBlankString(id)) throw new Refusal(`${where} has no id.`)
+    if (expenseIds.has(id)) throw new Refusal(`More than one expense share the id "${id}".`)
     expenseIds.add(id)
-    if (amount === undefined) return refuse(`${where} has no amount.`)
+    if (amount === undefined) throw new Refusal(`${where} has no amount.`)
     if (typeof amount !== 'number' || !Number.isInteger(amount)) {
-      return refuse(`${where} has an amount that is not a whole number of paise.`)
+      throw new Refusal(`${where} has an amount that is not a whole number of paise.`)
     }
-    if (amount <= 0) return refuse(`${where} has an amount that is not more than zero.`)
-    if (amount > MAX_AMOUNT) return refuse(`${where} has an amount above ${formatAmount(MAX_AMOUNT)}.`)
-    if (!isNonBlankString(description)) return refuse(`${where} has no description.`)
-    if (expenseDate === undefined) return refuse(`${where} has no expense date.`)
+    if (amount <= 0) throw new Refusal(`${where} has an amount that is not more than zero.`)
+    if (amount > MAX_AMOUNT) throw new Refusal(`${where} has an amount above ${formatAmount(MAX_AMOUNT)}.`)
+    if (!isNonBlankString(description)) throw new Refusal(`${where} has no description.`)
+    if (expenseDate === undefined) throw new Refusal(`${where} has no expense date.`)
     if (typeof expenseDate !== 'string' || !isCalendarDate(expenseDate)) {
-      return refuse(`${where} has an expense date that is not a valid YYYY-MM-DD calendar day.`)
+      throw new Refusal(`${where} has an expense date that is not a valid YYYY-MM-DD calendar day.`)
     }
-    if (today !== undefined && expenseDate > today) return refuse(`${where} has an expense date in the future (${expenseDate}).`)
-    if (!isNonBlankString(categoryId)) return refuse(`${where} has no category.`)
-    if (!categoryIds.has(categoryId)) return refuse(`${where} points at a category that does not exist ("${categoryId}").`)
-    expenses.push({ id, amount, description, expenseDate, categoryId })
+    if (today !== undefined && expenseDate > today) throw new Refusal(`${where} has an expense date in the future (${expenseDate}).`)
+    if (!isNonBlankString(categoryId)) throw new Refusal(`${where} has no category.`)
+    const sync = syncFields(raw, where)
+    const categoryIsLive = categoryLive.get(categoryId)
+    if (categoryIsLive === undefined) throw new Refusal(`${where} points at a category that does not exist ("${categoryId}").`)
+    // Live records only point at live records; a deleted expense may point at a deleted category.
+    if (!categoryIsLive && sync.deletedAt === undefined) {
+      throw new Refusal(`${where} points at a deleted category ("${categoryId}").`)
+    }
+    expenses.push(withSyncFields({ id, amount, description, expenseDate, categoryId }, sync))
   }
 
-  return { ok: true, data: { schemaVersion: SCHEMA_VERSION, categories, expenses } }
+  return { schemaVersion: SCHEMA_VERSION, categories: categories.sort(byCreation), expenses: expenses.sort(byCreation) }
+}
+
+type Times = Omit<SyncFields, 'id'>
+
+/** The record's times, refusing any that are missing or not UTC ISO 8601 (as `Date.toISOString` writes them). */
+function syncFields(raw: Blob, where: string): Times {
+  const { createdAt, updatedAt, deletedAt } = raw
+  const check = (value: unknown, what: string): string => {
+    if (value === undefined) throw new Refusal(`${where} has no ${what} time.`)
+    if (!isTimestamp(value)) throw new Refusal(`${where} has a ${what} time that is not a UTC ISO 8601 timestamp.`)
+    return value
+  }
+  const times: Times = { createdAt: check(createdAt, 'created'), updatedAt: check(updatedAt, 'updated') }
+  if (deletedAt !== undefined) times.deletedAt = check(deletedAt, 'deleted')
+  return times
+}
+
+/** The record with its times after its own fields, the key order the app writes, so exports compare exactly. */
+function withSyncFields<T extends { id: string }>(record: T, times: Times): T & Times {
+  return { ...record, ...times }
+}
+
+const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+function isTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string' || !TIMESTAMP_PATTERN.test(value)) return false
+  const date = new Date(value)
+  return !Number.isNaN(date.getTime()) && date.toISOString() === value
 }
 
 function refuse(message: string): SchemaResult {
   return { ok: false, message }
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
+function isObject(value: unknown): value is Blob {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
