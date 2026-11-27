@@ -314,7 +314,9 @@
   color: var(--danger);
 }
 
-.data-controls button {
+.data-controls button,
+.save-failed button,
+.update-prompt button {
   font: inherit;
   font-weight: 600;
   color: var(--text-h);
@@ -344,4 +346,26 @@
   padding: 2rem 1rem;
   color: var(--text-muted);
   text-align: center;
+}
+
+.update-prompt {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 0.75rem 1rem;
+  color: var(--text-h);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 0 0 8px 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.update-prompt p {
+  margin: 0;
 }

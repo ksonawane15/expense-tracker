@@ -21,6 +21,24 @@ function sampleData(): TrackerData {
   }
 }
 
+/** Writes a schema version straight into the meta store, as a newer app version would. */
+function setStoredSchemaVersion(factory: IDBFactory, version: number) {
+  return new Promise<void>((resolve, reject) => {
+    const request = factory.open('expense-tracker')
+    request.onsuccess = () => {
+      const db = request.result
+      const tx = db.transaction('meta', 'readwrite')
+      tx.objectStore('meta').put(version, 'schemaVersion')
+      tx.oncomplete = () => {
+        db.close()
+        resolve()
+      }
+      tx.onerror = () => reject(tx.error)
+    }
+    request.onerror = () => reject(request.error)
+  })
+}
+
 /** A record IndexedDB can't store (functions can't be cloned), to make a write fail part-way. */
 const unstorable = { id: 'bad', name: 'Bad', createdAt: at(9), updatedAt: at(9), oops: () => {} } as never
 
@@ -138,8 +156,40 @@ describe('the expense tracker over IndexedDB', () => {
 
     const result = await tracker.addExpense({ amount: '1', description: 'Not saved', expenseDate: '2026-11-20', categoryId: 'food' })
 
-    expect(result).toMatchObject({ ok: false, error: { field: 'save' } })
+    expect(result).toMatchObject({ ok: false, error: { field: 'newerVersion' } })
+    expect(tracker.newerVersionFound()).toBe(true)
     expect(tracker.exportToJson()).toBe(before)
+  })
+
+  it('refuses a write once a newer version has stored a newer schema version, storing nothing', async () => {
+    const factory = new IDBFactory()
+    const tracker = await openExpenseTracker({ repository: createIndexedDbRepository(factory), clock })
+    const before = tracker.exportToJson()
+    await setStoredSchemaVersion(factory, 3)
+
+    const result = await tracker.addExpense({ amount: '1', description: 'Not saved', expenseDate: '2026-11-20', categoryId: 'food' })
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'newerVersion' } })
+    const stored = await createIndexedDbRepository(factory).load()
+    expect(stored?.expenses).toEqual([])
+    expect(tracker.exportToJson()).toBe(before)
+  })
+
+  it('opens asking to reload when a newer version has already upgraded the database', async () => {
+    const factory = new IDBFactory()
+    await openExpenseTracker({ repository: createIndexedDbRepository(factory), clock })
+    await new Promise<void>((resolve) => {
+      const request = factory.open('expense-tracker', 99)
+      request.onsuccess = () => {
+        request.result.close()
+        resolve()
+      }
+    })
+
+    const older = await openExpenseTracker({ repository: createIndexedDbRepository(factory), clock })
+
+    expect(older.newerVersionFound()).toBe(true)
+    expect(older.storedDataProblem()).toBeNull()
   })
 
   it('upgrades v1 localStorage data in one go and keeps the old key only as a backup', async () => {

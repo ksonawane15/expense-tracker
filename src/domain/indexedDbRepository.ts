@@ -1,5 +1,5 @@
-import type { Repository, StoredRecords } from './repository.ts'
-import { RECORD_KINDS, type RecordKind, type RecordsByKind, type TrackerData } from './types.ts'
+import { NewerVersionError, type Repository, type StoredRecords } from './repository.ts'
+import { RECORD_KINDS, SCHEMA_VERSION, type RecordKind, type RecordsByKind, type TrackerData } from './types.ts'
 
 const DB_NAME = 'expense-tracker'
 /**
@@ -19,6 +19,8 @@ const ALL_STORES = [META_STORE, ...RECORD_KINDS]
  */
 export function createIndexedDbRepository(factory: IDBFactory = globalThis.indexedDB): Repository {
   let connection: Promise<IDBDatabase> | null = null
+  /** Set once a newer version of the app has taken over the database; nothing is written after that. */
+  let superseded = false
 
   function open(): Promise<IDBDatabase> {
     connection ??= new Promise<IDBDatabase>((resolve, reject) => {
@@ -34,10 +36,14 @@ export function createIndexedDbRepository(factory: IDBFactory = globalThis.index
         const db = request.result
         // A newer version of the app wants to upgrade the database. Step aside:
         // this window's writes fail from now on rather than block it.
-        db.onversionchange = () => db.close()
+        db.onversionchange = () => {
+          superseded = true
+          db.close()
+        }
         resolve(db)
       }
-      request.onerror = () => reject(request.error)
+      // A VersionError means a newer version of the app has already upgraded the database.
+      request.onerror = () => reject(request.error?.name === 'VersionError' ? new NewerVersionError() : request.error)
       request.onblocked = () => reject(new Error('The database is blocked by another window of the app.'))
     })
     // A failed open is retried next time rather than remembered.
@@ -51,6 +57,7 @@ export function createIndexedDbRepository(factory: IDBFactory = globalThis.index
    * that can't be stored), the transaction is aborted and nothing is written.
    */
   async function transaction<T>(mode: IDBTransactionMode, work: (tx: IDBTransaction) => Promise<T> | T): Promise<T> {
+    if (superseded) throw new NewerVersionError()
     const db = await open()
     return new Promise<T>((resolve, reject) => {
       const tx = db.transaction(ALL_STORES, mode)
@@ -88,6 +95,12 @@ export function createIndexedDbRepository(factory: IDBFactory = globalThis.index
     }
   }
 
+  /** Refuses the write in progress if a newer version of the app has stored a newer schema. */
+  async function refuseIfNewer(tx: IDBTransaction) {
+    const stored = await request(tx.objectStore(META_STORE).get(SCHEMA_VERSION_KEY))
+    if (typeof stored === 'number' && stored > SCHEMA_VERSION) throw new NewerVersionError()
+  }
+
   function writeEverything(tx: IDBTransaction, data: TrackerData) {
     for (const name of ALL_STORES) tx.objectStore(name).clear()
     tx.objectStore(META_STORE).put(data.schemaVersion, SCHEMA_VERSION_KEY)
@@ -115,11 +128,17 @@ export function createIndexedDbRepository(factory: IDBFactory = globalThis.index
     },
 
     put(records) {
-      return transaction('readwrite', (tx) => putAll(tx, records))
+      return transaction('readwrite', async (tx) => {
+        await refuseIfNewer(tx)
+        putAll(tx, records)
+      })
     },
 
     replaceAll(data) {
-      return transaction('readwrite', (tx) => writeEverything(tx, data))
+      return transaction('readwrite', async (tx) => {
+        await refuseIfNewer(tx)
+        writeEverything(tx, data)
+      })
     },
   }
 }
