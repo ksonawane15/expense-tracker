@@ -1,6 +1,6 @@
 import { addMonths, isCalendarDate, monthOf, toCalendarDate } from './calendarDate.ts'
 import { parseAmount } from './money.ts'
-import type { Repository, StoredRecords } from './repository.ts'
+import { NewerVersionError, type Repository, type StoredRecords } from './repository.ts'
 import { readTrackerData, readTrackerJson } from './schema.ts'
 import {
   categoryNameKey,
@@ -39,11 +39,13 @@ export interface ExpenseInput {
  * no longer exists, `'category'` when the category being renamed or deleted
  * no longer exists or is Other, which can't be deleted, `'import'` when an
  * import file was rejected, `'storedData'` when a change was refused because
- * stored data couldn't be read and the user hasn't started fresh, or `'save'`
- * when the change couldn't be saved and has been undone. Never thrown.
+ * stored data couldn't be read and the user hasn't started fresh, `'save'`
+ * when the change couldn't be saved and has been undone, or `'newerVersion'`
+ * when a newer version of the app has updated the stored data, so this one
+ * must reload before it saves anything. Never thrown.
  */
 export interface ValidationError {
-  field: keyof ExpenseInput | 'expense' | 'categoryName' | 'category' | 'import' | 'storedData' | 'save'
+  field: keyof ExpenseInput | 'expense' | 'categoryName' | 'category' | 'import' | 'storedData' | 'save' | 'newerVersion'
   message: string
 }
 
@@ -62,6 +64,9 @@ function fail(field: ValidationError['field'], message: string): Result<never> {
 
 const SAVE_FAILED =
   'Your change couldn’t be saved, so it has been undone. Export your data now to keep a copy of everything saved so far.'
+
+const NEWER_VERSION =
+  'A newer version of the app has updated your data, so this window can’t save any more. Reload to use the new version.'
 
 /** Stored data that couldn't be read on open: why, and what was found, to download before starting fresh. */
 export interface StoredDataProblem {
@@ -105,6 +110,12 @@ export async function openExpenseTracker({ repository, v1Source, clock = () => n
 
   const problemFileName = () => `expense-tracker-unreadable-data-${today()}.txt`
   let problem: StoredDataProblem | null = null
+  /**
+   * Set once stored data turns out to be from a newer version of the app, on
+   * open or when a save is refused. From then on nothing is saved: the newer
+   * data must not be overwritten by a version that doesn't understand it.
+   */
+  let newerVersion = false
   let data: TrackerData = { schemaVersion: SCHEMA_VERSION, categories: [], expenses: [] }
 
   function adopt(loaded: TrackerData) {
@@ -120,6 +131,11 @@ export async function openExpenseTracker({ repository, v1Source, clock = () => n
    * overwritten here: the user can download it before starting fresh.
    */
   async function readStored(stored: StoredRecords) {
+    if (typeof stored.schemaVersion === 'number' && stored.schemaVersion > SCHEMA_VERSION) {
+      // Not a problem to start fresh from: the data is fine, this app is just too old for it.
+      newerVersion = true
+      return
+    }
     const read = readTrackerData(stored, { now: clock() })
     if (!read.ok) {
       problem = { message: read.message, storedText: JSON.stringify(stored, null, 2), fileName: problemFileName() }
@@ -150,7 +166,8 @@ export async function openExpenseTracker({ repository, v1Source, clock = () => n
       const stored = await repository.load()
       if (stored) await readStored(stored)
     } catch (error) {
-      problem = onFailure(errorText(error))
+      if (error instanceof NewerVersionError) newerVersion = true
+      else problem = onFailure(errorText(error))
     }
     return false
   }
@@ -160,6 +177,10 @@ export async function openExpenseTracker({ repository, v1Source, clock = () => n
     try {
       stored = await repository.load()
     } catch (error) {
+      if (error instanceof NewerVersionError) {
+        newerVersion = true
+        return
+      }
       problem = {
         message: `Your saved data couldn’t be opened (${errorText(error)}). Nothing can be saved in this browser until it can.`,
         storedText: null,
@@ -277,10 +298,12 @@ export async function openExpenseTracker({ repository, v1Source, clock = () => n
    * `replace` is set (import, start fresh). If the write fails, the change is
    * undone and a `'save'` error comes back. While stored data couldn't be
    * read, changes are refused, so it is never overwritten until the user
-   * chooses to start fresh.
+   * chooses to start fresh. Once a newer version of the app has updated the
+   * stored data, every change is refused until this window reloads.
    */
   function commit<T>(change: () => Change<T>, { replace = false } = {}): Promise<Result<T>> {
     const run = async (): Promise<Result<T>> => {
+      if (newerVersion) return fail('newerVersion', NEWER_VERSION)
       if (problem) {
         return fail('storedData', 'Your saved data could not be read. Download it or start fresh before making changes.')
       }
@@ -291,8 +314,12 @@ export async function openExpenseTracker({ repository, v1Source, clock = () => n
       try {
         if (replace) await repository.replaceAll(data)
         else await repository.put(changedRecords(previous, data))
-      } catch {
+      } catch (error) {
         data = previous
+        if (error instanceof NewerVersionError) {
+          newerVersion = true
+          return fail('newerVersion', NEWER_VERSION)
+        }
         return fail('save', SAVE_FAILED)
       }
       return { ok: true, value: changed.value.value }
@@ -317,6 +344,15 @@ export async function openExpenseTracker({ repository, v1Source, clock = () => n
     },
 
     /**
+     * True once stored data turns out to be from a newer version of the app,
+     * found on open or when a save was refused. Nothing can be saved until this
+     * window reloads and runs the newer version.
+     */
+    newerVersionFound(): boolean {
+      return newerVersion
+    },
+
+    /**
      * Replaces stored data that couldn't be read with the default categories
      * and no expenses, and saves it. Only for after the user has confirmed;
      * refused when the stored data loaded fine.
@@ -327,7 +363,11 @@ export async function openExpenseTracker({ repository, v1Source, clock = () => n
         const fresh = defaultData(stamp)
         try {
           await repository.replaceAll(fresh)
-        } catch {
+        } catch (error) {
+          if (error instanceof NewerVersionError) {
+            newerVersion = true
+            return fail('newerVersion', NEWER_VERSION)
+          }
           return fail('save', 'Starting fresh couldn’t be saved, so nothing has changed.')
         }
         adopt(fresh)

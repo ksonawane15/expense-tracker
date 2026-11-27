@@ -7,10 +7,24 @@ import type { RecordKind, RecordsByKind, TrackerData } from './types.ts'
 export type StoredRecords = { schemaVersion: unknown } & { [K in RecordKind]: unknown[] }
 
 /**
+ * Why a write was refused: a newer version of the app, open in another
+ * window, has upgraded the stored data (or the database) past what this
+ * window understands. This window must not write again until it reloads.
+ */
+export class NewerVersionError extends Error {
+  constructor() {
+    super('A newer version of the app has updated your stored data.')
+    this.name = 'NewerVersionError'
+  }
+}
+
+/**
  * The only way the app reaches stored data (ADR-0001, ADR-0003). It only
  * stores and returns records: checking, migrating and choosing defaults are
  * the expense tracker module's job. Every write is all or nothing: if it
- * fails, the promise rejects and nothing it was given has been stored.
+ * fails, the promise rejects and nothing it was given has been stored. A
+ * write rejects with NewerVersionError, storing nothing, when the stored
+ * schema version is newer than SCHEMA_VERSION.
  */
 export interface Repository {
   /** Everything stored, or `null` when nothing has been stored yet. Rejects if storage can't be opened. */

@@ -1,5 +1,5 @@
-import type { Repository, StoredRecords } from './repository.ts'
-import { RECORD_KINDS, type RecordsByKind, type TrackerData } from './types.ts'
+import { NewerVersionError, type Repository, type StoredRecords } from './repository.ts'
+import { RECORD_KINDS, SCHEMA_VERSION, type RecordsByKind, type TrackerData } from './types.ts'
 
 /**
  * A repository held in memory, for tests. Like IndexedDB, it stores copies, so
@@ -11,6 +11,8 @@ export interface MemoryRepository extends Repository {
   failWrites: boolean
   /** Replaces what is stored without any checks, as an earlier app version or a corrupted store might leave it. */
   seed(stored: StoredRecords): void
+  /** Sets the stored schema version and nothing else, as a newer app version open in another window would. */
+  setStoredSchemaVersion(version: number): void
 }
 
 export function createMemoryRepository(): MemoryRepository {
@@ -19,6 +21,7 @@ export function createMemoryRepository(): MemoryRepository {
 
   function write(work: () => void): Promise<void> {
     if (repository.failWrites) return Promise.reject(new Error('Writes are failing.'))
+    if (typeof schemaVersion === 'number' && schemaVersion > SCHEMA_VERSION) return Promise.reject(new NewerVersionError())
     work()
     return Promise.resolve()
   }
@@ -48,6 +51,10 @@ export function createMemoryRepository(): MemoryRepository {
           store.set(typeof id === 'string' ? id : `unkeyed-${index}`, structuredClone(record))
         })
       }
+    },
+
+    setStoredSchemaVersion(version) {
+      schemaVersion = version
     },
 
     async load() {

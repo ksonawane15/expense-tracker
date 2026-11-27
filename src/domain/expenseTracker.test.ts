@@ -1053,13 +1053,38 @@ describe('stored data', () => {
     expect(tracker.expensesInMonth('2026-11').map((e) => e.expenseDate)).toEqual(['2026-11-25', '2026-11-20'])
   })
 
-  it('reports stored data from a newer schema version rather than guessing at it', async () => {
+  it('refuses to save over stored data from a newer schema version, asking to reload instead of starting fresh', async () => {
     const repository = createMemoryRepository()
     repository.seed({ ...importFile(), schemaVersion: 3 })
+    const stored = await repository.load()
 
     const { tracker } = await setup(repository)
 
-    expect(tracker.storedDataProblem()?.message).toMatch(/newer than this app understands/)
+    expect(tracker.newerVersionFound()).toBe(true)
+    expect(tracker.storedDataProblem()).toBeNull()
+    expect(await tracker.addExpense(valid)).toMatchObject({
+      ok: false,
+      error: { field: 'newerVersion', message: expect.stringMatching(/newer version.*Reload/) },
+    })
+    expect((await tracker.startFresh()).ok).toBe(false)
+    expect(await repository.load()).toEqual(stored)
+  })
+
+  it('stops saving, and undoes the change, once a newer version open elsewhere has updated the stored data', async () => {
+    const { tracker, repository } = await setup()
+    await addOrFail(tracker, { ...valid, description: 'Saved before' })
+    const before = tracker.exportToJson()
+    expect(tracker.newerVersionFound()).toBe(false)
+
+    repository.setStoredSchemaVersion(3)
+    const result = await tracker.addExpense({ ...valid, description: 'Not saved' })
+
+    expect(result).toMatchObject({ ok: false, error: { field: 'newerVersion' } })
+    expect(tracker.newerVersionFound()).toBe(true)
+    expect(tracker.exportToJson()).toBe(before)
+    // Even if the newer data went away, this window stays refused until it reloads.
+    repository.setStoredSchemaVersion(2)
+    expect(await tracker.addCategory('Books')).toMatchObject({ ok: false, error: { field: 'newerVersion' } })
   })
 
   it('reports storage that can’t be opened at all, with nothing to download, and refuses every change', async () => {

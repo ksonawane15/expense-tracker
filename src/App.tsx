@@ -4,26 +4,59 @@ import { formatExpenseDate, formatMonth } from './domain/calendarDate.ts'
 import type { ExpenseTracker, Result, StoredDataProblem, ValidationError } from './domain/expenseTracker.ts'
 import { formatAmount, toAmountText } from './domain/money.ts'
 import { OTHER_CATEGORY_ID, type Category, type Expense } from './domain/types.ts'
+import { reloadToNewestVersion } from './reloadToNewestVersion.ts'
+import { UpdatePrompt } from './UpdatePrompt.tsx'
 
 export default function App({ tracker: opening }: { tracker: Promise<ExpenseTracker> }) {
-  const tracker = use(opening)
+  return (
+    <>
+      <UpdatePrompt />
+      <Screen tracker={use(opening)} />
+    </>
+  )
+}
+
+function Screen({ tracker }: { tracker: ExpenseTracker }) {
   // The tracker owns the data; bumping this re-renders after each change.
   const [, setRevision] = useState(0)
   const refresh = () => setRevision((r) => r + 1)
+  // A newer version owns the stored data: this window must not save over it, only reload.
+  if (tracker.newerVersionFound()) return <NewerVersionScreen />
   const problem = tracker.storedDataProblem()
   // Nothing that could save is shown until the user has dealt with unreadable stored data.
   if (problem) return <StoredDataProblemScreen tracker={tracker} problem={problem} onStartedFresh={refresh} />
   return <ExpenseTrackerScreen tracker={tracker} refresh={refresh} />
 }
 
-/** Tells the screen that a change couldn't be saved and was undone, so it can offer an export. */
-const SaveFailedContext = createContext<() => void>(() => {})
+function NewerVersionScreen() {
+  return (
+    <main className="app">
+      <section className="data-controls" aria-labelledby="newer-version-heading">
+        <h1 id="newer-version-heading">A newer version of the app is in use</h1>
+        <p role="alert">
+          Another window has updated your data with a newer version of the app, so this window can’t save anything. Your
+          data is safe. Reload to use the new version.
+        </p>
+        <div className="data-actions">
+          <button type="button" onClick={() => void reloadToNewestVersion()}>
+            Reload
+          </button>
+        </div>
+      </section>
+    </main>
+  )
+}
 
-/** Passes a change's result through, raising the "couldn't be saved" message when its save failed. */
+/** Tells the screen that a change was refused by storage: its save failed, or a newer version owns the data. */
+const ChangeRefusedContext = createContext<(field: ValidationError['field']) => void>(() => {})
+
+/** Passes a change's result through, telling the screen when storage refused it. */
 function useSaveCheck() {
-  const saveFailed = useContext(SaveFailedContext)
+  const changeRefused = useContext(ChangeRefusedContext)
   return <T,>(result: Result<T>): Result<T> => {
-    if (!result.ok && result.error.field === 'save') saveFailed()
+    if (!result.ok && (result.error.field === 'save' || result.error.field === 'newerVersion')) {
+      changeRefused(result.error.field)
+    }
     return result
   }
 }
@@ -47,6 +80,8 @@ function StoredDataProblemScreen({ tracker, problem, onStartedFresh }: StoredDat
     const result = await tracker.startFresh()
     if (!result.ok) {
       setError(result.error.message)
+      // A newer version owns the data now: re-rendering switches to its reload screen.
+      if (result.error.field === 'newerVersion') onStartedFresh()
       return
     }
     onStartedFresh()
@@ -92,12 +127,13 @@ interface ExpenseTrackerScreenProps {
 
 function ExpenseTrackerScreen(props: ExpenseTrackerScreenProps) {
   const [saveFailed, setSaveFailed] = useState(false)
-  const reportSaveFailed = () => {
-    setSaveFailed(true)
+  const changeRefused = (field: ValidationError['field']) => {
+    if (field === 'save') setSaveFailed(true)
+    // A refusal because of a newer version switches the whole app to its reload screen.
     props.refresh()
   }
   return (
-    <SaveFailedContext value={reportSaveFailed}>
+    <ChangeRefusedContext value={changeRefused}>
       {saveFailed && (
         <div className="save-failed" role="alert">
           <p>A change couldn’t be saved, so it has been undone. Export your data now to keep a copy of everything saved so far.</p>
@@ -112,7 +148,7 @@ function ExpenseTrackerScreen(props: ExpenseTrackerScreenProps) {
         </div>
       )}
       <MonthScreen {...props} />
-    </SaveFailedContext>
+    </ChangeRefusedContext>
   )
 }
 
