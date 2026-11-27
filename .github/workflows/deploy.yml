@@ -4,7 +4,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [master]
+    branches: [master, preview/24-installable-offline]
   # Run by hand to publish a preview from another branch (allow that branch
   # under Settings → Environments → github-pages first).
   workflow_dispatch:
